@@ -1,160 +1,151 @@
 # Connectomics MCP
 
-An MCP (Model Context Protocol) server that gives LLMs structured, context-window-safe access to connectomic datasets. Wraps [CAVE](https://caveclient.readthedocs.io/) (MICrONS, FlyWire) and [neuPrint](https://neuprint.janelia.org/) (hemibrain) behind a unified semantic API.
+A [Model Context Protocol](https://modelcontextprotocol.io/) server that gives LLMs structured access to connectomic datasets. It wraps [CAVE](https://caveclient.readthedocs.io/) (MICrONS minnie65, FlyWire) and [neuPrint](https://neuprint.janelia.org/) (hemibrain) behind a unified API, returning lightweight summaries into the context window while saving complete, untruncated query results as Parquet artifacts on disk. The agent reads the summary to understand what was fetched, then writes code to analyze the full artifact. No data is hidden. No context window is flooded.
 
-## How It Works
+## Prerequisites
 
-Tools return **lightweight summaries** into the LLM context window (counts, distributions, 3 orientation examples) while saving **complete, untruncated results** as Parquet artifacts on disk. The agent reads the summary to understand what was fetched, then writes code to analyze the full artifact. No data is hidden. No context window is flooded.
+- **Python 3.11+**
+- **CAVE token** for MICrONS and FlyWire datasets -- obtain from <https://global.daf-apis.com/auth/api/v1/create_token>
+- **neuPrint token** for hemibrain -- obtain from <https://neuprint.janelia.org> (Account > Auth Token)
 
-```
-Agent calls get_connectivity(neuron_id, dataset)
-  -> MCP queries all synaptic partners from the backend
-  -> Saves complete partner table to ~/.connectomics_mcp/artifacts/minnie65_connectivity_864..._943_2026-03-10T....parquet
-  -> Returns to context: {n_upstream: 142, n_downstream: 87, top 3 partners, artifact_path, neuroglancer_url}
+## Quickstart
 
-Agent then: df = pd.read_parquet(artifact_path)  # full analysis on complete data
-```
-
-## Quick Start
+### Install
 
 ```bash
+git clone https://github.com/saarthaks/connectomics-mcp.git
+cd connectomics-mcp
 pip install -e .
 ```
 
-### Authentication
+### Configure credentials
+
+Create a `.env` file or export directly:
 
 ```bash
-# CAVE datasets (MICrONS minnie65, FlyWire)
 export CAVE_CLIENT_TOKEN="your-cave-token"
-
-# neuPrint datasets (hemibrain)
 export NEUPRINT_APPLICATION_CREDENTIALS="your-neuprint-token"
 ```
 
-- **CAVE token**: Obtain from [https://global.daf-apis.com/auth/api/v1/create_token](https://global.daf-apis.com/auth/api/v1/create_token)
-- **neuPrint token**: Obtain from [https://neuprint.janelia.org](https://neuprint.janelia.org) (Account > Auth Token)
+Optionally set a custom artifact output directory (default: `~/.connectomics_mcp/artifacts/`):
 
-### Run the Server
+```bash
+export CONNECTOMICS_MCP_ARTIFACT_DIR="/path/to/artifacts"
+```
+
+### Register with Claude Code
+
+Add to your Claude Code MCP config (`~/.claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "connectomics": {
+      "command": "connectomics-mcp"
+    }
+  }
+}
+```
+
+Or run the server directly:
 
 ```bash
 connectomics-mcp
 ```
 
-Or directly:
+## Example prompts
 
-```bash
-python -m connectomics_mcp.server
+**1. Identify a neuron and explore its connectivity**
+
+> "What cell type is MICrONS neuron 864691135571546917? Show me its top input partners."
+
+The agent calls `get_neuron_info` to retrieve cell type, synapse counts, and a Neuroglancer link, then calls `get_connectivity` to save the full partner table as a Parquet artifact. It loads the artifact and filters for the strongest upstream partners.
+
+**2. Compare neurotransmitter usage across a cell type in FlyWire**
+
+> "Find all DA1_lPN neurons in FlyWire and summarize their neurotransmitter predictions."
+
+The agent calls `get_neurons_by_type("DA1_lPN", "flywire")` to get every matching neuron, then iterates through them with `get_neuron_info` to collect NT predictions from output synapse profiles. FlyWire responses include hierarchical classification and per-neuron neurotransmitter type.
+
+**3. Run a custom Cypher query on hemibrain**
+
+> "How many Kenyon cells in hemibrain have more than 500 postsynaptic sites? Save the results."
+
+The agent calls `fetch_cypher` with a Cypher query like `MATCH (n:Neuron) WHERE n.type =~ 'KC.*' AND n.post > 500 RETURN n.bodyId, n.type, n.post`. The complete result is saved as a Parquet artifact; the context window receives the row count and column names.
+
+## Tools reference
+
+### Tier 1: Universal (minnie65, flywire, hemibrain)
+
+| Tool | Description | Returns |
+|------|-------------|---------|
+| `get_neuron_info` | Cell type, soma position, synapse counts, Neuroglancer URL | Scalar |
+| `get_connectivity` | All synaptic partners with weight distributions | Artifact |
+| `get_neurons_by_type` | All neurons matching a cell type annotation | Artifact |
+| `get_region_connectivity` | Region-to-region synapse counts in long format | Artifact |
+| `build_neuroglancer_url` | Construct a Neuroglancer visualization URL | Scalar |
+| `validate_root_ids` | Check root ID currency, suggest replacements for stale IDs | Scalar |
+
+### Tier 2: CAVE-specific (minnie65, flywire)
+
+| Tool | Description | Returns |
+|------|-------------|---------|
+| `get_proofreading_status` | Axon/dendrite proofread flags, edit count | Scalar |
+| `resolve_nucleus_ids` | Resolve MICrONS nucleus IDs to current root IDs (minnie65 only) | Scalar |
+| `query_annotation_table` | Query arbitrary CAVE annotation tables | Artifact |
+| `get_edit_history` | Neuron edit changelog (merge/split operations) | Artifact |
+
+### Tier 3: neuPrint-specific (hemibrain)
+
+| Tool | Description | Returns |
+|------|-------------|---------|
+| `fetch_cypher` | Execute arbitrary Cypher queries | Artifact |
+| `get_synapse_compartments` | Per-ROI synapse distribution | Scalar |
+
+**Artifact** tools save the complete query result as a Parquet file and return a lightweight manifest (counts, distributions, 3 orientation examples, file path, Neuroglancer URL) into the context window. **Scalar** tools return their full response directly -- no artifact needed.
+
+## How artifacts work
+
+```
+Agent calls get_connectivity(neuron_id, dataset)
+  -> MCP queries all synaptic partners from the backend API
+  -> Saves complete table to ~/.connectomics_mcp/artifacts/{dataset}_connectivity_{id}_{version}_{timestamp}.parquet
+  -> Returns to context: {n_upstream: 142, n_downstream: 87, top 3 samples, artifact_path, neuroglancer_url}
+
+Agent then: df = pd.read_parquet(artifact_path)  # full analysis on complete data
 ```
 
-## Configuration
+Artifacts are cached for 1 hour. Identical queries (same tool, dataset, neuron ID, materialization version) reuse the cached file.
 
-| Environment Variable | Default | Description |
-|---------------------|---------|-------------|
-| `CAVE_CLIENT_TOKEN` | *(required for CAVE)* | CAVE API authentication token |
-| `NEUPRINT_APPLICATION_CREDENTIALS` | *(required for neuPrint)* | neuPrint API token |
-| `CONNECTOMICS_MCP_ARTIFACT_DIR` | `~/.connectomics_mcp/artifacts/` | Directory for Parquet artifact output |
+## Dataset context
 
-## Supported Datasets
-
-| Dataset | Backend | Datastack / Server | Capabilities |
-|---------|---------|-------------------|-------------|
-| `minnie65` | CAVE | `minnie65_public` | universal, cave |
-| `flywire` | CAVE | `flywire_fafb_production` | universal, cave |
-| `hemibrain` | neuPrint | `neuprint.janelia.org` | universal, neuprint |
-
-## Tools
-
-### Tier 1: Universal (all datasets)
-
-| Tool | Description | Artifact? |
-|------|-------------|-----------|
-| `get_neuron_info` | Cell type, soma position, synapse counts, Neuroglancer URL | No |
-| `get_connectivity` | All synaptic partners with weight distributions | Yes |
-| `get_neurons_by_type` | All neurons matching a cell type annotation | Yes |
-| `get_region_connectivity` | Region-to-region synapse counts (long format) | Yes |
-| `build_neuroglancer_url` | Construct a Neuroglancer visualization URL | No |
-| `validate_root_ids` | Check root ID currency, suggest replacements for stale IDs | No |
-
-### Tier 2: CAVE-Specific (minnie65, flywire)
-
-| Tool | Description | Artifact? |
-|------|-------------|-----------|
-| `get_proofreading_status` | Axon/dendrite proofread flags, edit count | No |
-| `resolve_nucleus_ids` | Resolve MICrONS nucleus IDs to current root IDs (minnie65 only) | No |
-| `query_annotation_table` | Query arbitrary CAVE annotation tables | Yes |
-| `get_edit_history` | Neuron edit changelog (merge/split operations) | Yes |
-
-### Tier 3: neuPrint-Specific (hemibrain)
-
-| Tool | Description | Artifact? |
-|------|-------------|-----------|
-| `fetch_cypher` | Execute arbitrary Cypher queries | Yes |
-| `get_synapse_compartments` | Per-ROI synapse distribution | No |
-
-## Artifact-First Pattern
-
-Tools that return tabular data follow the **artifact-first pattern**:
-
-1. The complete query result is saved as a Parquet file (snappy compression) to `CONNECTOMICS_MCP_ARTIFACT_DIR`
-2. The context-window response contains only: counts, distributions, a 3-item orientation sample, the artifact path, and a Neuroglancer URL
-3. The orientation sample is explicitly labeled as non-exhaustive — it must never be used for analysis
-4. The agent loads the artifact with `pd.read_parquet(artifact_path)` for full analysis
-
-Artifacts are cached for 1 hour. If an identical query (same tool, dataset, neuron ID, materialization version) has a cached artifact less than 1 hour old, the cached path is returned without re-querying.
-
-**Artifact naming**: `{dataset}_{tool}_{neuron_id}_{materialization_version}_{iso_timestamp}.parquet`
-
-## Example Workflow
-
-```python
-# 1. Get basic neuron info
-info = get_neuron_info(720575940621039145, "minnie65")
-# Returns: cell_type="L2/3 IT", n_pre=1500, n_post=3200, neuroglancer_url=...
-
-# 2. Get all connectivity partners (artifact-producing)
-conn = get_connectivity(720575940621039145, "minnie65")
-# Returns: n_upstream=142, n_downstream=87, artifact_path=..., top 3 samples
-
-# 3. Load and analyze the full artifact
-import pandas as pd
-df = pd.read_parquet(conn["artifact_manifest"]["artifact_path"])
-# df has ALL 229 partners with columns: partner_id, direction, n_synapses, ...
-
-# 4. Filter and analyze in code
-top_inputs = df[df["direction"] == "upstream"].nlargest(10, "n_synapses")
-```
-
-## Root ID Staleness (CAVE Datasets)
-
-CAVE root IDs are invalidated by proofreading edits. All tools that accept a root ID for a CAVE dataset check currency first. If the ID is stale, a `StaleRootIdError` is raised with a message directing the user to `validate_root_ids()` for current replacements.
-
-Use `validate_root_ids([root_id], dataset)` to check currency and get suggested replacements before querying.
+| Dataset | Organism | Region | Neurons | Source |
+|---------|----------|--------|---------|--------|
+| `minnie65` | Mouse | Visual cortex (V1/LM) | ~75,000 proofread | [MICrONS Explorer](https://www.microns-explorer.org/) |
+| `flywire` | *Drosophila* | Whole brain | ~130,000 proofread | [FlyWire Codex](https://codex.flywire.ai/) |
+| `hemibrain` | *Drosophila* | Half brain | ~25,000 traced | [neuPrint](https://neuprint.janelia.org/) |
 
 ## Development
 
 ```bash
-# Install in development mode
 pip install -e ".[dev]"
-
-# Run tests (all mocked, no live API calls needed)
-pytest tests/ -v
+pytest tests/ -v                                          # unit tests (mocked, no credentials needed)
+pytest tests/integration/ --integration -v -s             # live API tests (requires tokens)
 ```
 
-Tests use mock backends defined in `tests/conftest.py`. No authentication tokens or network access required.
+## Citations
 
-## Architecture
+If you use this tool in your research, please cite the underlying datasets:
 
-See `CLAUDE.md` for full architectural details. Key files:
+**MICrONS (minnie65)**
+> MICrONS Consortium et al. "Functional connectomics spanning multiple areas of mouse visual cortex." *Nature* (2025). <https://doi.org/10.1038/s41586-025-08790-w>
 
-```
-src/connectomics_mcp/
-├── server.py              # FastMCP entry point (12 tools registered)
-├── tools/                 # Tool functions (universal, cave_specific, neuprint_specific)
-├── backends/              # API adapters (CAVE, neuPrint)
-├── output_contracts/      # Pydantic schemas + formatters
-├── artifacts/             # Parquet save/cache logic
-├── neuroglancer/          # URL builder
-└── registry.py            # Dataset -> backend routing
-```
+**FlyWire**
+> Dorkenwald, S. et al. "Neuronal wiring diagram of an adult brain." *Nature* 634, 124--138 (2024). <https://doi.org/10.1038/s41586-024-07558-y>
 
-See `TOOL_REGISTRY.md` for tool implementation status and `OUTPUT_CONTRACTS.md` for response schema specifications.
+**hemibrain**
+> Scheffer, L.K. et al. "A connectome and analysis of the adult *Drosophila* central brain." *eLife* 9:e57443 (2020). <https://doi.org/10.7554/eLife.57443>
+
+## License
+
+MIT
