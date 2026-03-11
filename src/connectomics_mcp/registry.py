@@ -15,12 +15,12 @@ logger = logging.getLogger(__name__)
 DATASETS: dict[str, dict[str, Any]] = {
     "flywire": {
         "backend": "cave",
-        "datastack": "flywire_fafb_production",
+        "class": "FlyWireBackend",
         "capabilities": ["cave", "universal"],
     },
     "minnie65": {
         "backend": "cave",
-        "datastack": "minnie65_public",
+        "class": "MICrONSBackend",
         "capabilities": ["cave", "universal"],
     },
     "hemibrain": {
@@ -28,11 +28,6 @@ DATASETS: dict[str, dict[str, Any]] = {
         "server": "neuprint.janelia.org",
         "dataset": "hemibrain:v1.2.1",
         "capabilities": ["neuprint", "universal"],
-    },
-    "fanc": {
-        "backend": "cave",
-        "datastack": "fanc_production_mar2021",
-        "capabilities": ["cave", "universal"],
     },
 }
 
@@ -67,9 +62,10 @@ def get_backend(dataset: str) -> ConnectomeBackend:
     backend_type = config["backend"]
 
     if backend_type == "cave":
-        from connectomics_mcp.backends.cave_backend import CAVEBackend
+        import connectomics_mcp.backends.cave_backend as cave_module
 
-        backend = CAVEBackend(datastack=config["datastack"], dataset_name=dataset)
+        backend_cls = getattr(cave_module, config["class"])
+        backend = backend_cls()
     elif backend_type == "neuprint":
         from connectomics_mcp.backends.neuprint_backend import NeuPrintBackend
 

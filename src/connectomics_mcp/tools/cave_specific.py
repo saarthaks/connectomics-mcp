@@ -29,7 +29,7 @@ def get_proofreading_status(neuron_id: int, dataset: str) -> dict[str, Any]:
         Root ID of the neuron.
     dataset : str
         Dataset to query. Must be a CAVE dataset: "minnie65",
-        "flywire", or "fanc".
+        "flywire".
 
     Returns
     -------

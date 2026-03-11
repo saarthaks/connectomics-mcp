@@ -69,6 +69,8 @@ def format_neuron_info(raw: dict[str, Any], dataset: str) -> NeuronInfoResponse:
         proofread=raw.get("proofread"),
         materialization_version=raw.get("materialization_version"),
         neuroglancer_url=ngl_url,
+        neurotransmitter_type=raw.get("neurotransmitter_type"),
+        classification_hierarchy=raw.get("classification_hierarchy"),
         warnings=raw.get("warnings", []),
     )
 
@@ -97,7 +99,11 @@ def _top_samples(
         samples.append(
             SynapticPartnerSample(
                 partner_id=int(row["partner_id"]),
-                partner_type=row.get("partner_type"),
+                partner_type=(
+                    str(row["partner_type"])
+                    if "partner_type" in row.index and pd.notna(row["partner_type"])
+                    else None
+                ),
                 n_synapses=int(row["n_synapses"]),
                 weight_normalized=(
                     float(row["weight_normalized"])
@@ -174,6 +180,14 @@ def format_connectivity(
     except KeyError:
         ngl_url = ""
 
+    # Compute neurotransmitter distribution if NT columns present
+    nt_distribution = None
+    nt_cols = ["gaba", "ach", "glut", "oct", "ser", "da"]
+    if not partners_df.empty and "partner_nt_type" in partners_df.columns:
+        nt_counts = partners_df["partner_nt_type"].dropna().value_counts().to_dict()
+        if nt_counts:
+            nt_distribution = {str(k): int(v) for k, v in nt_counts.items()}
+
     return ConnectivityResponse(
         neuron_id=neuron_id,
         dataset=dataset,
@@ -184,6 +198,7 @@ def format_connectivity(
         upstream_sample=upstream_sample,
         downstream_sample=downstream_sample,
         neuroglancer_url=ngl_url,
+        neurotransmitter_distribution=nt_distribution,
         artifact_manifest=manifest,
         warnings=raw.get("warnings", []),
     )

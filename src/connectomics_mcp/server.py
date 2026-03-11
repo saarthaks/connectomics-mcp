@@ -59,11 +59,11 @@ def get_neuron_info(
     ----------
     neuron_id : int | str
         The neuron identifier — a root ID for CAVE datasets
-        (minnie65, flywire, fanc) or a body ID for neuPrint
+        (minnie65, flywire) or a body ID for neuPrint
         datasets (hemibrain).
     dataset : str
         Dataset to query. Supported: "minnie65", "flywire",
-        "fanc", "hemibrain".
+        "hemibrain".
     nucleus_id : int, optional
         MICrONS nucleus ID (minnie65 only). If provided, resolves
         to the current pt_root_id before querying. Nucleus IDs are
@@ -95,11 +95,11 @@ def get_connectivity(
     ----------
     neuron_id : int | str
         The neuron identifier — a root ID for CAVE datasets
-        (minnie65, flywire, fanc) or a body ID for neuPrint
+        (minnie65, flywire) or a body ID for neuPrint
         datasets (hemibrain).
     dataset : str
         Dataset to query. Supported: "minnie65", "flywire",
-        "fanc", "hemibrain".
+        "hemibrain".
     direction : str
         Which partners to return: "upstream", "downstream", or "both"
         (default "both").
@@ -129,7 +129,7 @@ def validate_root_ids(root_ids: list[int], dataset: str) -> dict:
         The neuron identifiers to validate.
     dataset : str
         Dataset to query. Supported: "minnie65", "flywire",
-        "fanc", "hemibrain".
+        "hemibrain".
 
     Returns
     -------
@@ -146,7 +146,7 @@ def get_proofreading_status(neuron_id: int, dataset: str) -> dict:
 
     Returns whether axon and dendrite have been proofread, the
     proofreading strategy used, edit count, and last edit timestamp.
-    Only available for CAVE datasets (minnie65, flywire, fanc).
+    Only available for CAVE datasets (minnie65, flywire).
 
     Parameters
     ----------
@@ -154,7 +154,7 @@ def get_proofreading_status(neuron_id: int, dataset: str) -> dict:
         Root ID of the neuron.
     dataset : str
         Dataset to query. Must be a CAVE dataset: "minnie65",
-        "flywire", or "fanc".
+        "flywire".
 
     Returns
     -------
@@ -183,7 +183,7 @@ def build_neuroglancer_url(
         Segment IDs to highlight in the viewer.
     dataset : str
         Dataset to use. Supported: "minnie65", "flywire",
-        "fanc", "hemibrain".
+        "hemibrain".
     annotations : list[dict], optional
         Point annotations to overlay as an annotation layer.
 
@@ -213,7 +213,7 @@ def get_neurons_by_type(
         "MBON14", "KC-ab").
     dataset : str
         Dataset to query. Supported: "minnie65", "flywire",
-        "fanc", "hemibrain".
+        "hemibrain".
     region : str, optional
         Brain region filter. Only neurons in this region are
         included.
@@ -241,7 +241,7 @@ def query_annotation_table(
     complete query result is saved as a Parquet artifact — load it
     with ``pd.read_parquet(artifact_path)`` for full analysis.
 
-    Only available for CAVE datasets (minnie65, flywire, fanc).
+    Only available for CAVE datasets (minnie65, flywire).
 
     Parameters
     ----------
@@ -274,7 +274,7 @@ def get_edit_history(neuron_id: int, dataset: str) -> dict:
     complete edit log is saved as a Parquet artifact — load it
     with ``pd.read_parquet(artifact_path)`` for full analysis.
 
-    Only available for CAVE datasets (minnie65, flywire, fanc).
+    Only available for CAVE datasets (minnie65, flywire).
 
     Parameters
     ----------
@@ -282,7 +282,7 @@ def get_edit_history(neuron_id: int, dataset: str) -> dict:
         Root ID of the neuron.
     dataset : str
         Dataset to query. Must be a CAVE dataset: "minnie65",
-        "flywire", or "fanc".
+        "flywire".
 
     Returns
     -------
@@ -311,7 +311,7 @@ def get_region_connectivity(
     ----------
     dataset : str
         Dataset to query. Supported: "minnie65", "flywire",
-        "fanc", "hemibrain".
+        "hemibrain".
     source_region : str, optional
         Filter to connections from this region.
     target_region : str, optional

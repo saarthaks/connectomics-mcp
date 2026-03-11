@@ -36,3 +36,6 @@ dev = ["pytest>=7.0", "pyarrow>=12.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: live-API tests requiring credentials (deselected by default, use --integration to run)",
+]

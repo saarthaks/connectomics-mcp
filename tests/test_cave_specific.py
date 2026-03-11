@@ -115,7 +115,7 @@ class TestResolveNucleusIds:
         assert len(resp.resolutions) == 4
 
     def test_minnie65_only(self, mock_cave_backend):
-        """flywire and fanc should raise DatasetNotSupported."""
+        """flywire should raise DatasetNotSupported."""
         with pytest.raises(DatasetNotSupported):
             resolve_nucleus_ids([100001], "flywire")
 

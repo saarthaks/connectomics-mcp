@@ -11,6 +11,26 @@ import pytest
 from connectomics_mcp.backends.base import ConnectomeBackend
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--integration",
+        action="store_true",
+        default=False,
+        help="Run live-API integration tests (requires credentials).",
+    )
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    if config.getoption("--integration"):
+        return
+    skip_integration = pytest.mark.skip(reason="need --integration flag to run")
+    for item in items:
+        if "integration" in item.keywords:
+            item.add_marker(skip_integration)
+
+
 def _make_cave_connectivity_df(is_current: bool = True) -> pd.DataFrame:
     """Build a realistic mock connectivity DataFrame for CAVE."""
     rows = []
@@ -458,6 +478,156 @@ class MockCAVEBackend(ConnectomeBackend):
         }
 
 
+def _make_flywire_connectivity_df() -> pd.DataFrame:
+    """Build a realistic mock connectivity DataFrame for FlyWire with NT data."""
+    rows = []
+    nt_types = ["acetylcholine", "GABA", "glutamate", "acetylcholine", "GABA"]
+    nt_confs = [0.85, 0.72, 0.91, 0.68, 0.79]
+    # 5 upstream partners with NT data
+    for i in range(5):
+        rows.append({
+            "partner_id": 720575940600000 + i,
+            "direction": "upstream",
+            "partner_type": f"PN-{i}" if i < 3 else None,
+            "partner_class": None,
+            "n_synapses": 40 - i * 6,
+            "weight_normalized": (40 - i * 6) / 130.0,
+            "partner_region": None,
+            "neuroglancer_url": "",
+            "partner_nt_type": nt_types[i],
+            "partner_nt_confidence": nt_confs[i],
+        })
+    # 3 downstream partners with NT data
+    for i in range(3):
+        rows.append({
+            "partner_id": 720575940700000 + i,
+            "direction": "downstream",
+            "partner_type": f"KC-{i}" if i < 2 else None,
+            "partner_class": None,
+            "n_synapses": 30 - i * 8,
+            "weight_normalized": (30 - i * 8) / 52.0,
+            "partner_region": None,
+            "neuroglancer_url": "",
+            "partner_nt_type": "acetylcholine",
+            "partner_nt_confidence": 0.88 - i * 0.05,
+        })
+    return pd.DataFrame(rows)
+
+
+class MockFlyWireBackend(MockCAVEBackend):
+    """Mock FlyWire backend with hierarchy and NT enrichment."""
+
+    # Mock hierarchy data
+    HIERARCHY_DATA: dict[int, dict] = {
+        720575940621039145: {
+            "super_class": "central",
+            "cell_class": "olfactory",
+            "cell_sub_class": "uPN",
+            "cell_type": "DA1_lPN",
+        },
+        720575940600000000: {
+            "super_class": "central",
+            "cell_class": "olfactory",
+            "cell_sub_class": "uPN",
+            "cell_type": "DA1_lPN",
+        },
+        720575940600000001: {
+            "super_class": "central",
+            "cell_class": "olfactory",
+            "cell_sub_class": "uPN",
+            "cell_type": "DA1_lPN",
+        },
+    }
+
+    def __init__(self, is_current: bool = True) -> None:
+        super().__init__(is_current=is_current)
+        self.dataset_name = "flywire"
+
+    def get_neuron_info(self, neuron_id: int | str) -> dict[str, Any]:
+        root_id = int(neuron_id)
+        warnings: list[str] = []
+        if not self.is_current:
+            warnings.append(
+                f"Root ID {root_id} is outdated. "
+                f"Use `validate_root_ids()` to get current IDs."
+            )
+        hierarchy = self.HIERARCHY_DATA.get(root_id)
+        cell_type = None
+        if hierarchy:
+            # Use finest available level
+            for level in reversed(["super_class", "cell_class", "cell_sub_class", "cell_type"]):
+                if level in hierarchy:
+                    cell_type = hierarchy[level]
+                    break
+        return {
+            "neuron_id": root_id,
+            "dataset": "flywire",
+            "cell_type": cell_type,
+            "cell_class": hierarchy.get("cell_class") if hierarchy else None,
+            "soma_position_nm": (150000.0, 250000.0, 350000.0),
+            "n_pre_synapses": 12917,
+            "n_post_synapses": 7918,
+            "is_current": self.is_current,
+            "materialization_version": 783,
+            "neurotransmitter_type": "acetylcholine",
+            "classification_hierarchy": hierarchy,
+            "warnings": warnings,
+        }
+
+    def get_connectivity(
+        self, neuron_id: int | str, direction: str = "both"
+    ) -> dict[str, Any]:
+        root_id = int(neuron_id)
+        warnings: list[str] = []
+        if not self.is_current:
+            warnings.append(
+                f"Root ID {root_id} is outdated. "
+                f"Use `validate_root_ids()` to get current IDs."
+            )
+        df = _make_flywire_connectivity_df()
+        if direction == "upstream":
+            df = df[df["direction"] == "upstream"]
+        elif direction == "downstream":
+            df = df[df["direction"] == "downstream"]
+        return {
+            "neuron_id": root_id,
+            "dataset": "flywire",
+            "is_current": self.is_current,
+            "materialization_version": 783,
+            "warnings": warnings,
+            "partners_df": df,
+        }
+
+    def get_neurons_by_type(
+        self, cell_type: str, region: str | None = None
+    ) -> dict[str, Any]:
+        # Build neurons from hierarchy data
+        rows = []
+        for rid, hierarchy in self.HIERARCHY_DATA.items():
+            if hierarchy.get("cell_type") == cell_type:
+                rows.append({
+                    "neuron_id": rid,
+                    "cell_type": cell_type,
+                    "cell_class": hierarchy.get("cell_class"),
+                    "region": hierarchy.get("super_class"),
+                    "n_pre_synapses": None,
+                    "n_post_synapses": None,
+                    "proofread": None,
+                })
+        neurons_df = pd.DataFrame(rows)
+        if region and not neurons_df.empty:
+            mask = neurons_df["region"].str.contains(region, case=False, na=False)
+            neurons_df = neurons_df[mask].reset_index(drop=True)
+        return {
+            "dataset": "flywire",
+            "query_cell_type": cell_type,
+            "query_region": region,
+            "materialization_version": 783,
+            "warnings": [],
+            "neurons_df": neurons_df,
+        }
+
+
 def _make_neuprint_cypher_result_df() -> pd.DataFrame:
     """Build a realistic mock Cypher query result DataFrame."""
     rows = [
@@ -652,4 +822,12 @@ def mock_neuprint_backend():
     """Provide a MockNeuPrintBackend and patch registry to return it."""
     backend = MockNeuPrintBackend()
     with patch("connectomics_mcp.registry._backend_cache", {"hemibrain": backend}):
+        yield backend
+
+
+@pytest.fixture
+def mock_flywire_backend():
+    """Provide a MockFlyWireBackend and patch registry to return it."""
+    backend = MockFlyWireBackend(is_current=True)
+    with patch("connectomics_mcp.registry._backend_cache", {"flywire": backend}):
         yield backend

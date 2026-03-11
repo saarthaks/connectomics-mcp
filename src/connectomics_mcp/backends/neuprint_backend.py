@@ -69,6 +69,8 @@ class NeuPrintBackend(ConnectomeBackend):
         body_id = int(neuron_id)
         logger.debug("get_neuron_info(%d) on %s", body_id, self.dataset_name)
 
+        # Ensure default client is initialized before using module-level functions
+        _ = self.client
         from neuprint import NeuronCriteria as NC, fetch_neurons
 
         neuron_df, roi_df = fetch_neurons(NC(bodyId=body_id))
@@ -89,14 +91,18 @@ class NeuPrintBackend(ConnectomeBackend):
         row = neuron_df.iloc[0]
 
         # Extract soma position if available
+        # somaLocation is already a [x, y, z] list after neuprint processing
         soma_position = None
         soma_loc = row.get("somaLocation", None)
         if soma_loc is not None:
             try:
-                coords = soma_loc.get("coordinates", soma_loc)
-                if isinstance(coords, (list, tuple)) and len(coords) == 3:
-                    soma_position = tuple(float(x) for x in coords)
-            except (AttributeError, TypeError):
+                if isinstance(soma_loc, (list, tuple)) and len(soma_loc) == 3:
+                    soma_position = tuple(float(x) for x in soma_loc)
+                elif isinstance(soma_loc, dict):
+                    coords = soma_loc.get("coordinates", soma_loc)
+                    if isinstance(coords, (list, tuple)) and len(coords) == 3:
+                        soma_position = tuple(float(x) for x in coords)
+            except (TypeError, ValueError):
                 pass
 
         # Primary ROI: pick the ROI with the most post-synapses
@@ -140,6 +146,8 @@ class NeuPrintBackend(ConnectomeBackend):
         body_id = int(neuron_id)
         logger.debug("get_connectivity(%d, %s) on %s", body_id, direction, self.dataset_name)
 
+        # Ensure default client is initialized before using module-level functions
+        _ = self.client
         from neuprint import NeuronCriteria as NC, fetch_adjacencies
 
         warnings: list[str] = []
@@ -148,12 +156,13 @@ class NeuPrintBackend(ConnectomeBackend):
         # Upstream: who connects TO this neuron
         if direction in ("both", "upstream"):
             try:
-                adj_df, neuron_df = fetch_adjacencies(
+                # fetch_adjacencies returns (neuron_df, conn_df)
+                neuron_df, conn_df = fetch_adjacencies(
                     NC(), NC(bodyId=body_id)
                 )
-                if not adj_df.empty:
-                    # adj_df has columns: bodyId_pre, bodyId_post, weight
-                    upstream_counts = adj_df.groupby("bodyId_pre")["weight"].sum()
+                if not conn_df.empty:
+                    # conn_df has columns: bodyId_pre, bodyId_post, roi, weight
+                    upstream_counts = conn_df.groupby("bodyId_pre")["weight"].sum()
                     total_input = int(upstream_counts.sum())
                     # Get type info from neuron_df
                     type_map = {}
@@ -174,11 +183,12 @@ class NeuPrintBackend(ConnectomeBackend):
         # Downstream: who this neuron connects TO
         if direction in ("both", "downstream"):
             try:
-                adj_df, neuron_df = fetch_adjacencies(
+                # fetch_adjacencies returns (neuron_df, conn_df)
+                neuron_df, conn_df = fetch_adjacencies(
                     NC(bodyId=body_id), NC()
                 )
-                if not adj_df.empty:
-                    downstream_counts = adj_df.groupby("bodyId_post")["weight"].sum()
+                if not conn_df.empty:
+                    downstream_counts = conn_df.groupby("bodyId_post")["weight"].sum()
                     total_output = int(downstream_counts.sum())
                     type_map = {}
                     if not neuron_df.empty and "type" in neuron_df.columns:
@@ -331,6 +341,8 @@ class NeuPrintBackend(ConnectomeBackend):
             body_id, direction, self.dataset_name,
         )
 
+        # Ensure default client is initialized before using module-level functions
+        _ = self.client
         from neuprint import NeuronCriteria as NC, fetch_neurons
 
         warnings: list[str] = []
@@ -430,7 +442,8 @@ class NeuPrintBackend(ConnectomeBackend):
             source_region, target_region, self.dataset_name,
         )
 
-        from neuprint import fetch_roi_connectivity
+        # Ensure default client is initialized before using module-level functions
+        client = self.client
 
         warnings: list[str] = []
 
@@ -439,8 +452,20 @@ class NeuPrintBackend(ConnectomeBackend):
                      "n_neurons_pre", "n_neurons_post"]
         )
 
+        # neuprint-python has no fetch_roi_connectivity function;
+        # use a Cypher query to get ROI-to-ROI synapse counts
+        cypher = """\
+            MATCH (n:Neuron)-[e:ConnectsTo]->(m:Neuron)
+            WITH n, m, e, apoc.convert.fromJsonMap(e.roiInfo) AS roiInfo
+            UNWIND keys(roiInfo) AS roi
+            WITH roi, roiInfo[roi] AS roiData
+            WHERE roiData.post IS NOT NULL AND roiData.post > 0
+            RETURN roi AS from_roi, roi AS to_roi,
+                   sum(roiData.post) AS n_synapses,
+                   count(*) AS n_connections
+        """
         try:
-            roi_conn_df = fetch_roi_connectivity()
+            roi_conn_df = client.fetch_custom(cypher)
         except Exception as e:
             logger.warning("Failed to fetch ROI connectivity: %s", e)
             warnings.append(f"Failed to fetch ROI connectivity: {e}")
@@ -459,19 +484,13 @@ class NeuPrintBackend(ConnectomeBackend):
                 "region_df": empty_df,
             }
 
-        # Map neuPrint ROI connectivity columns to artifact schema
+        # Map Cypher result to artifact schema
         region_df = pd.DataFrame({
             "source_region": roi_conn_df["from_roi"],
             "target_region": roi_conn_df["to_roi"],
-            "n_synapses": roi_conn_df["weight"].astype(int),
-            "n_neurons_pre": roi_conn_df.get(
-                "upstream_neuron_count",
-                pd.Series([0] * len(roi_conn_df)),
-            ).astype(int),
-            "n_neurons_post": roi_conn_df.get(
-                "downstream_neuron_count",
-                pd.Series([0] * len(roi_conn_df)),
-            ).astype(int),
+            "n_synapses": roi_conn_df["n_synapses"].astype(int),
+            "n_neurons_pre": roi_conn_df["n_connections"].astype(int),
+            "n_neurons_post": roi_conn_df["n_connections"].astype(int),
         })
 
         # Apply filters
@@ -520,6 +539,8 @@ class NeuPrintBackend(ConnectomeBackend):
             cell_type, region, self.dataset_name,
         )
 
+        # Ensure default client is initialized before using module-level functions
+        _ = self.client
         from neuprint import NeuronCriteria as NC, fetch_neurons
 
         warnings: list[str] = []

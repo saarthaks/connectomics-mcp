@@ -35,11 +35,11 @@ def get_neuron_info(
     ----------
     neuron_id : int | str
         The neuron identifier — a root ID for CAVE datasets
-        (minnie65, flywire, fanc) or a body ID for neuPrint
+        (minnie65, flywire) or a body ID for neuPrint
         datasets (hemibrain).
     dataset : str
         Dataset to query. Supported: "minnie65", "flywire",
-        "fanc", "hemibrain".
+        "hemibrain".
     nucleus_id : int, optional
         MICrONS nucleus ID (minnie65 only). If provided, resolves
         to the current pt_root_id before querying.
@@ -129,11 +129,11 @@ def get_connectivity(
     ----------
     neuron_id : int | str
         The neuron identifier — a root ID for CAVE datasets
-        (minnie65, flywire, fanc) or a body ID for neuPrint
+        (minnie65, flywire) or a body ID for neuPrint
         datasets (hemibrain).
     dataset : str
         Dataset to query. Supported: "minnie65", "flywire",
-        "fanc", "hemibrain".
+        "hemibrain".
     direction : str
         Which partners to return: "upstream", "downstream", or "both"
         (default "both").
@@ -182,7 +182,7 @@ def validate_root_ids(
         The neuron identifiers to validate.
     dataset : str
         Dataset to query. Supported: "minnie65", "flywire",
-        "fanc", "hemibrain".
+        "hemibrain".
 
     Returns
     -------
@@ -217,7 +217,7 @@ def build_neuroglancer_url_tool(
         Segment IDs to highlight in the viewer.
     dataset : str
         Dataset to use. Supported: "minnie65", "flywire",
-        "fanc", "hemibrain".
+        "hemibrain".
     annotations : list[dict], optional
         Point annotations to overlay.
 
@@ -268,7 +268,7 @@ def get_neurons_by_type(
         Cell type annotation to search for (e.g. "L2/3 IT").
     dataset : str
         Dataset to query. Supported: "minnie65", "flywire",
-        "fanc", "hemibrain".
+        "hemibrain".
     region : str, optional
         Brain region filter.
 
@@ -310,7 +310,7 @@ def get_region_connectivity(
     ----------
     dataset : str
         Dataset to query. Supported: "minnie65", "flywire",
-        "fanc", "hemibrain".
+        "hemibrain".
     source_region : str, optional
         Filter to connections from this region.
     target_region : str, optional

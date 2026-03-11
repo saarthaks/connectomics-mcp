@@ -19,7 +19,7 @@ class DatasetNotSupported(Exception):
                 f"Check TOOL_REGISTRY.md for dataset compatibility."
             )
         else:
-            msg = f"Unknown dataset '{dataset}'. Supported: minnie65, flywire, fanc, hemibrain."
+            msg = f"Unknown dataset '{dataset}'. Supported: minnie65, flywire, hemibrain."
         super().__init__(msg)
         self.dataset = dataset
         self.capability = capability

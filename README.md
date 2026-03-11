@@ -1,6 +1,6 @@
 # Connectomics MCP
 
-An MCP (Model Context Protocol) server that gives LLMs structured, context-window-safe access to connectomic datasets. Wraps [CAVE](https://caveclient.readthedocs.io/) (MICrONS, FlyWire, FANC) and [neuPrint](https://neuprint.janelia.org/) (hemibrain) behind a unified semantic API.
+An MCP (Model Context Protocol) server that gives LLMs structured, context-window-safe access to connectomic datasets. Wraps [CAVE](https://caveclient.readthedocs.io/) (MICrONS, FlyWire) and [neuPrint](https://neuprint.janelia.org/) (hemibrain) behind a unified semantic API.
 
 ## How It Works
 
@@ -24,7 +24,7 @@ pip install -e .
 ### Authentication
 
 ```bash
-# CAVE datasets (MICrONS minnie65, FlyWire, FANC)
+# CAVE datasets (MICrONS minnie65, FlyWire)
 export CAVE_CLIENT_TOKEN="your-cave-token"
 
 # neuPrint datasets (hemibrain)
@@ -60,7 +60,6 @@ python -m connectomics_mcp.server
 |---------|---------|-------------------|-------------|
 | `minnie65` | CAVE | `minnie65_public` | universal, cave |
 | `flywire` | CAVE | `flywire_fafb_production` | universal, cave |
-| `fanc` | CAVE | `fanc_production_mar2021` | universal, cave |
 | `hemibrain` | neuPrint | `neuprint.janelia.org` | universal, neuprint |
 
 ## Tools
@@ -76,7 +75,7 @@ python -m connectomics_mcp.server
 | `build_neuroglancer_url` | Construct a Neuroglancer visualization URL | No |
 | `validate_root_ids` | Check root ID currency, suggest replacements for stale IDs | No |
 
-### Tier 2: CAVE-Specific (minnie65, flywire, fanc)
+### Tier 2: CAVE-Specific (minnie65, flywire)
 
 | Tool | Description | Artifact? |
 |------|-------------|-----------|

@@ -38,13 +38,6 @@ NEUROGLANCER_CONFIGS: dict[str, dict[str, Any]] = {
         "voxel_size": [8, 8, 8],
         "coordinate_space": "nm",
     },
-    "fanc": {
-        "base_url": "https://neuroglancer.brain-map.org",
-        "em_source": "precomputed://https://bossdb-open-data.s3.amazonaws.com/fanc/em",
-        "seg_source": "graphene://https://prodv1.flywire-daf.com/segmentation/api/v1/fanc_production_mar2021",
-        "voxel_size": [4.3, 4.3, 45],
-        "coordinate_space": "nm",
-    },
 }
 
 

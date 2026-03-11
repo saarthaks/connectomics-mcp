@@ -1,9 +1,18 @@
-"""CAVE backend adapter for MICrONS, FlyWire, and FANC datasets."""
+"""CAVE backend adapter for MICrONS and FlyWire datasets.
+
+Concrete base class ``CAVEBackend`` holds all shared CAVE logic.
+Dataset-specific config and behaviour live in two subclasses:
+
+* ``MICrONSBackend`` — nucleus enrichment in connectivity
+* ``FlyWireBackend`` — hierarchy cache, NT prediction, NT enrichment,
+  neurons-by-type override
+"""
 
 from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any
 
 import pandas as pd
@@ -13,46 +22,28 @@ from connectomics_mcp.exceptions import BackendConnectionError
 
 logger = logging.getLogger(__name__)
 
-# Dataset-specific table names for cell type annotations
-CELL_TYPE_TABLES: dict[str, str] = {
-    "minnie65": "aibs_metamodel_celltypes_v661",
-    "flywire": "classification",
-    "fanc": "cell_info",
-}
 
-SYNAPSE_TABLES: dict[str, str] = {
-    "minnie65": "synapses_pni_2",
-    "flywire": "synapses",
-    "fanc": "synapses",
-}
-
-NUCLEUS_TABLES: dict[str, str] = {
-    "minnie65": "nucleus_detection_v0",
-    "flywire": "nuclei_v1",
-    "fanc": "nuclei_v1",
-}
-
-PROOFREADING_TABLES: dict[str, str] = {
-    "minnie65": "proofreading_status_public_release",
-    "flywire": "proofreading_status_table",
-    "fanc": "proofreading_status",
-}
-
+# ---------------------------------------------------------------------------
+# CAVEBackend — concrete base with shared CAVE logic
+# ---------------------------------------------------------------------------
 
 class CAVEBackend(ConnectomeBackend):
     """Backend adapter for CAVE-based connectomic datasets.
 
-    Parameters
-    ----------
-    datastack : str
-        The CAVE datastack name.
-    dataset_name : str
-        Human-readable dataset name for error messages.
+    Subclasses set class-level attributes for table/column names
+    and override template-method hooks for dataset-specific enrichment.
     """
 
-    def __init__(self, datastack: str, dataset_name: str) -> None:
-        self.datastack = datastack
-        self.dataset_name = dataset_name
+    # -- config (overridden by subclasses) ----------------------------------
+    dataset_name: str = ""
+    datastack: str = ""
+    cell_type_table: str | None = None
+    cell_type_column: str = "cell_type"
+    synapse_table: str = "synapses"
+    nucleus_table: str | None = None
+    proofreading_table: str | None = None
+
+    def __init__(self) -> None:
         self._client = None
 
     @property
@@ -72,6 +63,57 @@ class CAVEBackend(ConnectomeBackend):
             except Exception as e:
                 raise BackendConnectionError("cave", str(e)) from e
         return self._client
+
+    # -- template-method hooks (no-ops on base) -----------------------------
+
+    def _enrich_neuron_info(
+        self, root_id: int, result: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Hook for dataset-specific neuron info enrichment.
+
+        Called after the base neuron-info dict is built.  The default
+        implementation returns the dict unchanged.
+        """
+        return result
+
+    def _enrich_connectivity(
+        self,
+        root_id: int,
+        direction: str,
+        partners_df: pd.DataFrame,
+        warnings: list[str],
+    ) -> pd.DataFrame:
+        """Hook for dataset-specific connectivity enrichment.
+
+        Called after partner cell types and placeholder columns are added.
+        The default implementation returns the DataFrame unchanged.
+        """
+        return partners_df
+
+    def _interpret_proofreading_row(
+        self, row: pd.Series
+    ) -> dict[str, Any]:
+        """Hook for interpreting a proofreading-table row.
+
+        Returns a dict with keys ``axon_proofread``, ``dendrite_proofread``,
+        ``strategy_axon``, ``strategy_dendrite``.
+        """
+        axon_proofread = None
+        dendrite_proofread = None
+        if "status_axon" in row.index:
+            val = row.get("status_axon")
+            axon_proofread = bool(val) if pd.notna(val) else None
+        if "status_dendrite" in row.index:
+            val = row.get("status_dendrite")
+            dendrite_proofread = bool(val) if pd.notna(val) else None
+        return {
+            "axon_proofread": axon_proofread,
+            "dendrite_proofread": dendrite_proofread,
+            "strategy_axon": row.get("strategy_axon"),
+            "strategy_dendrite": row.get("strategy_dendrite"),
+        }
+
+    # -- shared methods -----------------------------------------------------
 
     def get_neuron_info(self, neuron_id: int | str) -> dict[str, Any]:
         """Fetch neuron info from CAVE.
@@ -110,47 +152,54 @@ class CAVEBackend(ConnectomeBackend):
         # Query cell type
         cell_type = None
         cell_class = None
-        ct_table = CELL_TYPE_TABLES.get(self.dataset_name)
-        if ct_table:
+        if self.cell_type_table:
             try:
                 ct_df = self.client.materialize.query_table(
-                    ct_table, filter_equal_dict={"pt_root_id": root_id}
+                    self.cell_type_table,
+                    filter_equal_dict={"pt_root_id": root_id},
                 )
                 if len(ct_df) > 0:
                     row = ct_df.iloc[0]
-                    cell_type = row.get("cell_type", None)
+                    cell_type = row.get(self.cell_type_column, None)
                     cell_class = row.get("classification_system", None) or row.get(
                         "cell_class", None
                     )
             except Exception as e:
-                logger.warning("Failed to query cell type table %s: %s", ct_table, e)
+                logger.warning(
+                    "Failed to query cell type table %s: %s",
+                    self.cell_type_table, e,
+                )
 
         # Query nucleus position
         soma_position_nm = None
-        nuc_table = NUCLEUS_TABLES.get(self.dataset_name)
-        if nuc_table:
+        if self.nucleus_table:
             try:
                 nuc_df = self.client.materialize.query_table(
-                    nuc_table, filter_equal_dict={"pt_root_id": root_id}
+                    self.nucleus_table,
+                    filter_equal_dict={"pt_root_id": root_id},
+                    select_columns=["pt_root_id", "pt_position"],
                 )
-                if len(nuc_df) > 0:
-                    row = nuc_df.iloc[0]
-                    pt_position = row.get("pt_position", None)
-                    if pt_position is not None:
-                        soma_position_nm = tuple(float(x) for x in pt_position)
+                if not nuc_df.empty:
+                    pos = nuc_df.iloc[0].get("pt_position")
+                    if pos is not None:
+                        if isinstance(pos, (list, tuple)) and len(pos) == 3:
+                            soma_position_nm = tuple(float(x) for x in pos)
+                        elif hasattr(pos, "tolist"):
+                            coords = pos.tolist()
+                            if len(coords) == 3:
+                                soma_position_nm = tuple(float(x) for x in coords)
             except Exception as e:
-                logger.warning("Failed to query nucleus table %s: %s", nuc_table, e)
+                logger.warning("Failed to query nucleus position: %s", e)
 
-        # Query synapse counts
+        # Synapse counts
         n_pre = None
         n_post = None
-        syn_table = SYNAPSE_TABLES.get(self.dataset_name)
-        if syn_table:
+        if self.synapse_table:
             try:
                 pre_df = self.client.materialize.query_table(
-                    syn_table,
+                    self.synapse_table,
                     filter_equal_dict={"pre_pt_root_id": root_id},
-                    select_columns=["id"],
+                    select_columns=["pre_pt_root_id"],
                 )
                 n_pre = len(pre_df)
             except Exception as e:
@@ -158,9 +207,9 @@ class CAVEBackend(ConnectomeBackend):
 
             try:
                 post_df = self.client.materialize.query_table(
-                    syn_table,
+                    self.synapse_table,
                     filter_equal_dict={"post_pt_root_id": root_id},
-                    select_columns=["id"],
+                    select_columns=["post_pt_root_id"],
                 )
                 n_post = len(post_df)
             except Exception as e:
@@ -173,7 +222,7 @@ class CAVEBackend(ConnectomeBackend):
         except Exception:
             pass
 
-        return {
+        result = {
             "neuron_id": root_id,
             "dataset": self.dataset_name,
             "cell_type": cell_type,
@@ -183,8 +232,13 @@ class CAVEBackend(ConnectomeBackend):
             "n_post_synapses": n_post,
             "is_current": is_current,
             "materialization_version": mat_version,
+            "neurotransmitter_type": None,
+            "classification_hierarchy": None,
             "warnings": warnings,
         }
+
+        # Dataset-specific enrichment hook
+        return self._enrich_neuron_info(root_id, result)
 
     def get_connectivity(
         self, neuron_id: int | str, direction: str = "both"
@@ -205,7 +259,9 @@ class CAVEBackend(ConnectomeBackend):
             warnings, partners_df (a pd.DataFrame with all partner rows).
         """
         root_id = int(neuron_id)
-        logger.debug("get_connectivity(%d, %s) on %s", root_id, direction, self.dataset_name)
+        logger.debug(
+            "get_connectivity(%d, %s) on %s", root_id, direction, self.dataset_name
+        )
 
         warnings: list[str] = []
 
@@ -223,8 +279,6 @@ class CAVEBackend(ConnectomeBackend):
             logger.warning("Failed to check root ID currency: %s", e)
             warnings.append(f"Could not verify root ID currency: {e}")
 
-        syn_table = SYNAPSE_TABLES.get(self.dataset_name, "synapses")
-        ct_table = CELL_TYPE_TABLES.get(self.dataset_name)
         mat_version = None
         try:
             mat_version = self.client.materialize.version
@@ -237,7 +291,7 @@ class CAVEBackend(ConnectomeBackend):
         if direction in ("both", "upstream"):
             try:
                 post_df = self.client.materialize.query_table(
-                    syn_table,
+                    self.synapse_table,
                     filter_equal_dict={"post_pt_root_id": root_id},
                     select_columns=["pre_pt_root_id"],
                 )
@@ -249,7 +303,9 @@ class CAVEBackend(ConnectomeBackend):
                             "partner_id": int(partner_id),
                             "direction": "upstream",
                             "n_synapses": int(n_syn),
-                            "weight_normalized": float(n_syn) / total_input if total_input > 0 else 0.0,
+                            "weight_normalized": (
+                                float(n_syn) / total_input if total_input > 0 else 0.0
+                            ),
                         })
             except Exception as e:
                 logger.warning("Failed to query upstream partners: %s", e)
@@ -259,7 +315,7 @@ class CAVEBackend(ConnectomeBackend):
         if direction in ("both", "downstream"):
             try:
                 pre_df = self.client.materialize.query_table(
-                    syn_table,
+                    self.synapse_table,
                     filter_equal_dict={"pre_pt_root_id": root_id},
                     select_columns=["post_pt_root_id"],
                 )
@@ -271,32 +327,48 @@ class CAVEBackend(ConnectomeBackend):
                             "partner_id": int(partner_id),
                             "direction": "downstream",
                             "n_synapses": int(n_syn),
-                            "weight_normalized": float(n_syn) / total_output if total_output > 0 else 0.0,
+                            "weight_normalized": (
+                                float(n_syn) / total_output
+                                if total_output > 0
+                                else 0.0
+                            ),
                         })
             except Exception as e:
                 logger.warning("Failed to query downstream partners: %s", e)
                 warnings.append(f"Failed to query downstream partners: {e}")
 
-        partners_df = pd.DataFrame(rows) if rows else pd.DataFrame(
-            columns=["partner_id", "direction", "n_synapses", "weight_normalized"]
+        partners_df = (
+            pd.DataFrame(rows)
+            if rows
+            else pd.DataFrame(
+                columns=[
+                    "partner_id", "direction", "n_synapses", "weight_normalized",
+                ]
+            )
         )
 
         # Batch lookup cell types for all partners
-        if ct_table and not partners_df.empty:
+        if self.cell_type_table and not partners_df.empty:
             all_partner_ids = partners_df["partner_id"].unique().tolist()
             try:
                 ct_df = self.client.materialize.query_table(
-                    ct_table,
+                    self.cell_type_table,
                     filter_in_dict={"pt_root_id": all_partner_ids},
-                    select_columns=["pt_root_id", "cell_type"],
+                    select_columns=["pt_root_id", self.cell_type_column],
                 )
                 if not ct_df.empty:
-                    ct_map = dict(zip(ct_df["pt_root_id"], ct_df["cell_type"]))
-                    partners_df["partner_type"] = partners_df["partner_id"].map(ct_map)
+                    ct_map = dict(
+                        zip(ct_df["pt_root_id"], ct_df[self.cell_type_column])
+                    )
+                    partners_df["partner_type"] = partners_df["partner_id"].map(
+                        ct_map
+                    )
                 else:
                     partners_df["partner_type"] = None
             except Exception as e:
-                logger.warning("Failed to batch lookup partner cell types: %s", e)
+                logger.warning(
+                    "Failed to batch lookup partner cell types: %s", e
+                )
                 partners_df["partner_type"] = None
         elif not partners_df.empty:
             partners_df["partner_type"] = None
@@ -310,52 +382,10 @@ class CAVEBackend(ConnectomeBackend):
             if "neuroglancer_url" not in partners_df.columns:
                 partners_df["neuroglancer_url"] = ""
 
-        # MICrONS nucleus ID enrichment: annotate partners with nucleus IDs
-        if self.dataset_name == "minnie65" and not partners_df.empty:
-            nuc_table = NUCLEUS_TABLES.get(self.dataset_name, "nucleus_detection_v0")
-            all_partner_ids = partners_df["partner_id"].unique().tolist()
-            try:
-                nuc_df = self.client.materialize.query_table(
-                    nuc_table,
-                    filter_in_dict={"pt_root_id": all_partner_ids},
-                    select_columns=["id", "pt_root_id"],
-                )
-                if not nuc_df.empty:
-                    # Group nucleus IDs by pt_root_id
-                    nuc_groups = nuc_df.groupby("pt_root_id")["id"].apply(list).to_dict()
-
-                    nuc_ids: list[int | None] = []
-                    conflicts: list[bool] = []
-                    for pid in partners_df["partner_id"]:
-                        nids = nuc_groups.get(int(pid), [])
-                        if len(nids) == 1:
-                            nuc_ids.append(int(nids[0]))
-                            conflicts.append(False)
-                        elif len(nids) > 1:
-                            # Merge conflict — multiple nuclei in one segment
-                            nuc_ids.append(None)
-                            conflicts.append(True)
-                            logger.debug(
-                                "Partner %d has multiple nucleus IDs: %s",
-                                int(pid), nids,
-                            )
-                        else:
-                            nuc_ids.append(None)
-                            conflicts.append(False)
-
-                    partners_df = partners_df.copy()
-                    partners_df["partner_nucleus_id"] = nuc_ids
-                    partners_df["partner_nucleus_conflict"] = conflicts
-                else:
-                    partners_df = partners_df.copy()
-                    partners_df["partner_nucleus_id"] = None
-                    partners_df["partner_nucleus_conflict"] = False
-            except Exception as e:
-                logger.warning("Failed to enrich partners with nucleus IDs: %s", e)
-                warnings.append(f"Failed to enrich partners with nucleus IDs: {e}")
-                partners_df = partners_df.copy()
-                partners_df["partner_nucleus_id"] = None
-                partners_df["partner_nucleus_conflict"] = False
+        # Dataset-specific enrichment hook
+        partners_df = self._enrich_connectivity(
+            root_id, direction, partners_df, warnings
+        )
 
         return {
             "neuron_id": root_id,
@@ -419,9 +449,12 @@ class CAVEBackend(ConnectomeBackend):
 
                 # Try to get last edit timestamp
                 try:
-                    changelog = self.client.chunkedgraph.get_tabular_changelog(
-                        root_id
+                    changelog_dict = (
+                        self.client.chunkedgraph.get_tabular_change_log(
+                            [root_id]
+                        )
                     )
+                    changelog = changelog_dict.get(root_id, pd.DataFrame())
                     if isinstance(changelog, pd.DataFrame) and not changelog.empty:
                         last_ts = changelog.iloc[-1].get("timestamp")
                         if last_ts is not None:
@@ -475,32 +508,28 @@ class CAVEBackend(ConnectomeBackend):
             warnings.append(f"Could not verify root ID currency: {e}")
 
         # Query proofreading table
-        proofread_table = PROOFREADING_TABLES.get(self.dataset_name)
         axon_proofread = None
         dendrite_proofread = None
         strategy_axon = None
         strategy_dendrite = None
 
-        if proofread_table:
+        if self.proofreading_table:
             try:
                 pr_df = self.client.materialize.query_table(
-                    proofread_table,
+                    self.proofreading_table,
                     filter_equal_dict={"pt_root_id": root_id},
                 )
                 if not pr_df.empty:
                     row = pr_df.iloc[0]
-                    axon_proofread = row.get("status_axon") in (
-                        True, "t", "True", "extended",
-                    ) if "status_axon" in row.index else None
-                    dendrite_proofread = row.get("status_dendrite") in (
-                        True, "t", "True", "extended",
-                    ) if "status_dendrite" in row.index else None
-                    strategy_axon = row.get("strategy_axon")
-                    strategy_dendrite = row.get("strategy_dendrite")
+                    interpreted = self._interpret_proofreading_row(row)
+                    axon_proofread = interpreted["axon_proofread"]
+                    dendrite_proofread = interpreted["dendrite_proofread"]
+                    strategy_axon = interpreted["strategy_axon"]
+                    strategy_dendrite = interpreted["strategy_dendrite"]
             except Exception as e:
                 logger.warning(
                     "Failed to query proofreading table %s: %s",
-                    proofread_table, e,
+                    self.proofreading_table, e,
                 )
                 warnings.append(f"Could not query proofreading table: {e}")
         else:
@@ -512,7 +541,10 @@ class CAVEBackend(ConnectomeBackend):
         n_edits = None
         last_edit_timestamp = None
         try:
-            changelog = self.client.chunkedgraph.get_tabular_changelog(root_id)
+            changelog_dict = self.client.chunkedgraph.get_tabular_change_log(
+                [root_id]
+            )
+            changelog = changelog_dict.get(root_id, pd.DataFrame())
             if isinstance(changelog, pd.DataFrame) and not changelog.empty:
                 n_edits = len(changelog)
                 last_ts = changelog.iloc[-1].get("timestamp")
@@ -539,7 +571,7 @@ class CAVEBackend(ConnectomeBackend):
         nucleus_ids: list[int],
         materialization_version: int | None = None,
     ) -> dict[str, Any]:
-        """Resolve nucleus IDs to current pt_root_ids via nucleus_detection_v0.
+        """Resolve nucleus IDs to current pt_root_ids.
 
         Parameters
         ----------
@@ -566,7 +598,7 @@ class CAVEBackend(ConnectomeBackend):
             except Exception:
                 mat_version = 0
 
-        nuc_table = NUCLEUS_TABLES.get(self.dataset_name, "nucleus_detection_v0")
+        nuc_table = self.nucleus_table or "nucleus_detection_v0"
 
         # Query nucleus table for the given IDs
         nuc_df = pd.DataFrame()
@@ -612,7 +644,6 @@ class CAVEBackend(ConnectomeBackend):
             rid = nuc_to_root.get(nid)
 
             if nid not in nuc_to_root or rid is None:
-                # No segment found
                 resolutions.append({
                     "nucleus_id": nid,
                     "pt_root_id": None,
@@ -622,7 +653,6 @@ class CAVEBackend(ConnectomeBackend):
                 })
                 n_no_segment += 1
             elif nid in merge_conflict_nucs:
-                # Merge conflict
                 conflicting = [
                     other for other in root_to_nucs[rid] if other != nid
                 ]
@@ -635,7 +665,6 @@ class CAVEBackend(ConnectomeBackend):
                 })
                 n_merge_conflicts += 1
             else:
-                # Clean 1:1 resolution
                 resolutions.append({
                     "nucleus_id": nid,
                     "pt_root_id": rid,
@@ -686,15 +715,14 @@ class CAVEBackend(ConnectomeBackend):
         except Exception:
             pass
 
-        syn_table = SYNAPSE_TABLES.get(self.dataset_name, "synapses")
-        ct_table = CELL_TYPE_TABLES.get(self.dataset_name)
-
         empty_df = pd.DataFrame(
-            columns=["source_region", "target_region", "n_synapses",
-                     "n_neurons_pre", "n_neurons_post"]
+            columns=[
+                "source_region", "target_region", "n_synapses",
+                "n_neurons_pre", "n_neurons_post",
+            ]
         )
 
-        if not ct_table:
+        if not self.cell_type_table:
             warnings.append("No cell type table configured for this dataset")
             return {
                 "dataset": self.dataset_name,
@@ -706,7 +734,7 @@ class CAVEBackend(ConnectomeBackend):
         # Query synapse table for pre/post root IDs
         try:
             syn_df = self.client.materialize.query_table(
-                syn_table,
+                self.synapse_table,
                 select_columns=["pre_pt_root_id", "post_pt_root_id"],
             )
         except Exception as e:
@@ -734,12 +762,14 @@ class CAVEBackend(ConnectomeBackend):
         )
         try:
             ct_df = self.client.materialize.query_table(
-                ct_table,
+                self.cell_type_table,
                 filter_in_dict={"pt_root_id": all_ids},
-                select_columns=["pt_root_id", "cell_type"],
+                select_columns=["pt_root_id", self.cell_type_column],
             )
         except Exception as e:
-            logger.warning("Failed to query cell type table for regions: %s", e)
+            logger.warning(
+                "Failed to query cell type table for regions: %s", e
+            )
             warnings.append(f"Failed to query cell type table: {e}")
             return {
                 "dataset": self.dataset_name,
@@ -752,7 +782,9 @@ class CAVEBackend(ConnectomeBackend):
         region_map: dict[int, str] = {}
         for _, row in ct_df.iterrows():
             rid = row.get("pt_root_id")
-            region = row.get("tag") or row.get("region") or row.get("cell_type")
+            region = (
+                row.get("tag") or row.get("region") or row.get(self.cell_type_column)
+            )
             if rid is not None and region is not None:
                 region_map[int(rid)] = str(region)
 
@@ -860,7 +892,9 @@ class CAVEBackend(ConnectomeBackend):
 
         # Build schema description from DataFrame dtypes
         if not table_df.empty:
-            col_descs = [f"{col}: {dtype}" for col, dtype in table_df.dtypes.items()]
+            col_descs = [
+                f"{col}: {dtype}" for col, dtype in table_df.dtypes.items()
+            ]
             schema_description = "; ".join(col_descs)
         else:
             schema_description = "Empty result"
@@ -918,7 +952,10 @@ class CAVEBackend(ConnectomeBackend):
             columns=["operation_id", "timestamp", "operation_type", "user_id"]
         )
         try:
-            changelog = self.client.chunkedgraph.get_tabular_changelog(root_id)
+            changelog_dict = self.client.chunkedgraph.get_tabular_change_log(
+                [root_id]
+            )
+            changelog = changelog_dict.get(root_id, pd.DataFrame())
             if isinstance(changelog, pd.DataFrame) and not changelog.empty:
                 rows: list[dict] = []
                 for idx, row in changelog.iterrows():
@@ -930,14 +967,20 @@ class CAVEBackend(ConnectomeBackend):
                     else:
                         op_type = "unknown"
                     rows.append({
-                        "operation_id": int(idx) if isinstance(idx, (int, float)) else len(rows),
+                        "operation_id": (
+                            int(idx)
+                            if isinstance(idx, (int, float))
+                            else len(rows)
+                        ),
                         "timestamp": str(row.get("timestamp", "")),
                         "operation_type": op_type,
                         "user_id": str(row.get("user_id", "")),
                     })
                 edits_df = pd.DataFrame(rows)
         except Exception as e:
-            logger.warning("Failed to fetch edit changelog for %d: %s", root_id, e)
+            logger.warning(
+                "Failed to fetch edit changelog for %d: %s", root_id, e
+            )
             warnings.append(f"Failed to fetch edit changelog: {e}")
 
         return {
@@ -993,25 +1036,29 @@ class CAVEBackend(ConnectomeBackend):
         except Exception:
             pass
 
-        ct_table = CELL_TYPE_TABLES.get(self.dataset_name)
-        if not ct_table:
+        empty_neurons_df = pd.DataFrame(
+            columns=[
+                "neuron_id", "cell_type", "cell_class",
+                "region", "n_pre_synapses", "n_post_synapses",
+                "proofread",
+            ]
+        )
+
+        if not self.cell_type_table:
             return {
                 "dataset": self.dataset_name,
                 "query_cell_type": cell_type,
                 "query_region": region,
                 "materialization_version": mat_version,
                 "warnings": ["No cell type table configured for this dataset"],
-                "neurons_df": pd.DataFrame(
-                    columns=["neuron_id", "cell_type", "cell_class",
-                             "region", "n_pre_synapses", "n_post_synapses",
-                             "proofread"]
-                ),
+                "neurons_df": empty_neurons_df,
             }
 
         # Query cell type table
         try:
             ct_df = self.client.materialize.query_table(
-                ct_table, filter_equal_dict={"cell_type": cell_type}
+                self.cell_type_table,
+                filter_equal_dict={self.cell_type_column: cell_type},
             )
         except Exception as e:
             logger.warning("Failed to query cell type table: %s", e)
@@ -1025,25 +1072,20 @@ class CAVEBackend(ConnectomeBackend):
                 "query_region": region,
                 "materialization_version": mat_version,
                 "warnings": warnings,
-                "neurons_df": pd.DataFrame(
-                    columns=["neuron_id", "cell_type", "cell_class",
-                             "region", "n_pre_synapses", "n_post_synapses",
-                             "proofread"]
-                ),
+                "neurons_df": empty_neurons_df,
             }
 
         # Build result DataFrame
-        rows: list[dict] = []
+        rows = []
         for _, row in ct_df.iterrows():
             root_id = row.get("pt_root_id")
             if root_id is None:
                 continue
             rows.append({
                 "neuron_id": int(root_id),
-                "cell_type": row.get("cell_type"),
+                "cell_type": row.get(self.cell_type_column),
                 "cell_class": (
-                    row.get("classification_system")
-                    or row.get("cell_class")
+                    row.get("classification_system") or row.get("cell_class")
                 ),
                 "region": row.get("tag", None) or row.get("region", None),
                 "n_pre_synapses": None,
@@ -1068,3 +1110,386 @@ class CAVEBackend(ConnectomeBackend):
             "warnings": warnings,
             "neurons_df": neurons_df,
         }
+
+
+# ---------------------------------------------------------------------------
+# MICrONSBackend
+# ---------------------------------------------------------------------------
+
+class MICrONSBackend(CAVEBackend):
+    """CAVE backend for MICrONS (minnie65) with nucleus enrichment."""
+
+    dataset_name = "minnie65"
+    datastack = "minnie65_public"
+    cell_type_table = "aibs_metamodel_celltypes_v661"
+    cell_type_column = "cell_type"
+    synapse_table = "synapses_pni_2"
+    nucleus_table = "nucleus_detection_v0"
+    proofreading_table = "proofreading_status_and_strategy"
+
+    def _enrich_connectivity(
+        self,
+        root_id: int,
+        direction: str,
+        partners_df: pd.DataFrame,
+        warnings: list[str],
+    ) -> pd.DataFrame:
+        """Add partner_nucleus_id and partner_nucleus_conflict columns."""
+        if partners_df.empty:
+            return partners_df
+
+        all_partner_ids = partners_df["partner_id"].unique().tolist()
+        try:
+            nuc_df = self.client.materialize.query_table(
+                self.nucleus_table,
+                filter_in_dict={"pt_root_id": all_partner_ids},
+                select_columns=["id", "pt_root_id"],
+            )
+            if not nuc_df.empty:
+                # Group nucleus IDs by pt_root_id
+                nuc_groups = (
+                    nuc_df.groupby("pt_root_id")["id"].apply(list).to_dict()
+                )
+
+                nuc_ids: list[int | None] = []
+                conflicts: list[bool] = []
+                for pid in partners_df["partner_id"]:
+                    nids = nuc_groups.get(int(pid), [])
+                    if len(nids) == 1:
+                        nuc_ids.append(int(nids[0]))
+                        conflicts.append(False)
+                    elif len(nids) > 1:
+                        nuc_ids.append(None)
+                        conflicts.append(True)
+                        logger.debug(
+                            "Partner %d has multiple nucleus IDs: %s",
+                            int(pid), nids,
+                        )
+                    else:
+                        nuc_ids.append(None)
+                        conflicts.append(False)
+
+                partners_df = partners_df.copy()
+                partners_df["partner_nucleus_id"] = nuc_ids
+                partners_df["partner_nucleus_conflict"] = conflicts
+            else:
+                partners_df = partners_df.copy()
+                partners_df["partner_nucleus_id"] = None
+                partners_df["partner_nucleus_conflict"] = False
+        except Exception as e:
+            logger.warning(
+                "Failed to enrich partners with nucleus IDs: %s", e
+            )
+            warnings.append(f"Failed to enrich partners with nucleus IDs: {e}")
+            partners_df = partners_df.copy()
+            partners_df["partner_nucleus_id"] = None
+            partners_df["partner_nucleus_conflict"] = False
+
+        return partners_df
+
+
+# ---------------------------------------------------------------------------
+# FlyWireBackend
+# ---------------------------------------------------------------------------
+
+# Neurotransmitter column names in FlyWire's synapses_nt_v1
+NT_COLUMNS = ["gaba", "ach", "glut", "oct", "ser", "da"]
+
+# Human-readable names for argmax NT prediction
+NT_LABELS = {
+    "gaba": "GABA",
+    "ach": "acetylcholine",
+    "glut": "glutamate",
+    "oct": "octopamine",
+    "ser": "serotonin",
+    "da": "dopamine",
+}
+
+# Hierarchy levels in hierarchical_neuron_annotations
+HIERARCHY_LEVELS = [
+    "super_class", "cell_class", "cell_sub_class", "cell_type",
+]
+
+_HIERARCHY_CACHE_TTL = 600  # 10 minutes
+
+
+class FlyWireBackend(CAVEBackend):
+    """CAVE backend for FlyWire with hierarchy, NT prediction, and NT enrichment."""
+
+    dataset_name = "flywire"
+    datastack = "flywire_fafb_public"
+    cell_type_table = "neuron_information_v2"
+    cell_type_column = "tag"
+    synapse_table = "synapses_nt_v1"
+    nucleus_table = "nuclei_v1"
+    proofreading_table = "proofread_neurons"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._hierarchy_cache: tuple[pd.DataFrame, float] | None = None
+
+    # -- FlyWire-specific helpers -------------------------------------------
+
+    def _get_hierarchy_df(self) -> pd.DataFrame:
+        """Fetch or return cached hierarchical_neuron_annotations table.
+
+        The table cannot be filtered server-side by pt_root_id (returns
+        500), so we cache the full table in memory with a 10-minute TTL.
+        """
+        now = time.monotonic()
+        if self._hierarchy_cache is not None:
+            df, cached_at = self._hierarchy_cache
+            if now - cached_at < _HIERARCHY_CACHE_TTL:
+                return df
+
+        df = self.client.materialize.query_table(
+            "hierarchical_neuron_annotations",
+            select_columns=[
+                "pt_root_id", "classification_system", "cell_type",
+            ],
+        )
+        self._hierarchy_cache = (df, now)
+        return df
+
+    def _get_flywire_hierarchy(self, root_id: int) -> dict | None:
+        """Look up FlyWire hierarchical classification for a neuron.
+
+        Returns a dict like::
+
+            {
+                "super_class": "central",
+                "cell_class": "visual_projection",
+                "cell_sub_class": "LC",
+                "cell_type": "LC10",
+            }
+
+        or None if no annotation exists.
+        """
+        try:
+            hier_df = self._get_hierarchy_df()
+        except Exception as e:
+            logger.warning("Failed to fetch hierarchy table: %s", e)
+            return None
+
+        rows = hier_df[hier_df["pt_root_id"] == root_id]
+        if rows.empty:
+            return None
+
+        result: dict[str, str | None] = {}
+        for _, row in rows.iterrows():
+            level = row.get("classification_system")
+            ct = row.get("cell_type")
+            if level and ct and pd.notna(level) and pd.notna(ct):
+                result[str(level)] = str(ct)
+
+        return result if result else None
+
+    # -- template-method overrides ------------------------------------------
+
+    def _enrich_neuron_info(
+        self, root_id: int, result: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Add hierarchical classification and NT prediction."""
+        # Hierarchical classification (replaces neuron_information_v2 lookup)
+        hierarchy = self._get_flywire_hierarchy(root_id)
+        if hierarchy:
+            result["classification_hierarchy"] = hierarchy
+            # Use finest available level as cell_type
+            for level in reversed(HIERARCHY_LEVELS):
+                if level in hierarchy:
+                    result["cell_type"] = hierarchy[level]
+                    break
+
+        # Neurotransmitter prediction from output synapses
+        n_pre = result.get("n_pre_synapses")
+        if self.synapse_table and n_pre and n_pre > 0:
+            try:
+                nt_df = self.client.materialize.query_table(
+                    self.synapse_table,
+                    filter_equal_dict={"pre_pt_root_id": root_id},
+                    select_columns=["pre_pt_root_id"] + NT_COLUMNS,
+                )
+                if not nt_df.empty:
+                    nt_means = nt_df[NT_COLUMNS].mean()
+                    best_nt = nt_means.idxmax()
+                    result["neurotransmitter_type"] = NT_LABELS.get(
+                        best_nt, best_nt
+                    )
+            except Exception as e:
+                logger.warning("Failed to query NT predictions: %s", e)
+
+        return result
+
+    def _enrich_connectivity(
+        self,
+        root_id: int,
+        direction: str,
+        partners_df: pd.DataFrame,
+        warnings: list[str],
+    ) -> pd.DataFrame:
+        """Add partner_nt_type and partner_nt_confidence columns."""
+        if partners_df.empty:
+            return partners_df
+
+        try:
+            nt_dfs = []
+            if direction in ("both", "upstream"):
+                up_nt_df = self.client.materialize.query_table(
+                    self.synapse_table,
+                    filter_equal_dict={"post_pt_root_id": root_id},
+                    select_columns=["pre_pt_root_id"] + NT_COLUMNS,
+                )
+                if not up_nt_df.empty:
+                    up_nt_df = up_nt_df.rename(
+                        columns={"pre_pt_root_id": "partner_id"}
+                    )
+                    nt_dfs.append(up_nt_df)
+
+            if direction in ("both", "downstream"):
+                dn_nt_df = self.client.materialize.query_table(
+                    self.synapse_table,
+                    filter_equal_dict={"pre_pt_root_id": root_id},
+                    select_columns=["post_pt_root_id"] + NT_COLUMNS,
+                )
+                if not dn_nt_df.empty:
+                    dn_nt_df = dn_nt_df.rename(
+                        columns={"post_pt_root_id": "partner_id"}
+                    )
+                    nt_dfs.append(dn_nt_df)
+
+            if nt_dfs:
+                all_nt = pd.concat(nt_dfs, ignore_index=True)
+                grouped = all_nt.groupby("partner_id")[NT_COLUMNS].mean()
+                grouped["nt_type"] = grouped.idxmax(axis=1)
+                grouped["nt_confidence"] = grouped[NT_COLUMNS].max(axis=1)
+                nt_map = grouped["nt_type"].map(NT_LABELS).to_dict()
+                conf_map = grouped["nt_confidence"].to_dict()
+
+                partners_df = partners_df.copy()
+                partners_df["partner_nt_type"] = partners_df["partner_id"].map(
+                    nt_map
+                )
+                partners_df["partner_nt_confidence"] = partners_df[
+                    "partner_id"
+                ].map(conf_map)
+            else:
+                partners_df = partners_df.copy()
+                partners_df["partner_nt_type"] = None
+                partners_df["partner_nt_confidence"] = None
+        except Exception as e:
+            logger.warning(
+                "Failed to enrich partners with NT predictions: %s", e
+            )
+            warnings.append(
+                f"Failed to enrich partners with NT predictions: {e}"
+            )
+            partners_df = partners_df.copy()
+            partners_df["partner_nt_type"] = None
+            partners_df["partner_nt_confidence"] = None
+
+        return partners_df
+
+    def _interpret_proofreading_row(
+        self, row: pd.Series
+    ) -> dict[str, Any]:
+        """FlyWire: presence in proofread_neurons table = proofread."""
+        return {
+            "axon_proofread": True,
+            "dendrite_proofread": True,
+            "strategy_axon": None,
+            "strategy_dendrite": None,
+        }
+
+    def get_neurons_by_type(
+        self, cell_type: str, region: str | None = None
+    ) -> dict[str, Any]:
+        """Fetch neurons by type using FlyWire hierarchy cache.
+
+        Full override — uses ``hierarchical_neuron_annotations`` instead
+        of ``neuron_information_v2``.
+        """
+        logger.debug(
+            "get_neurons_by_type(%s, region=%s) on %s",
+            cell_type, region, self.dataset_name,
+        )
+
+        warnings: list[str] = []
+        mat_version = None
+        try:
+            mat_version = self.client.materialize.version
+        except Exception:
+            pass
+
+        empty_neurons_df = pd.DataFrame(
+            columns=[
+                "neuron_id", "cell_type", "cell_class",
+                "region", "n_pre_synapses", "n_post_synapses",
+                "proofread",
+            ]
+        )
+
+        try:
+            hier_df = self._get_hierarchy_df()
+            matches = hier_df[
+                (hier_df["classification_system"] == "cell_type")
+                & (hier_df["cell_type"] == cell_type)
+            ]
+            if matches.empty:
+                return {
+                    "dataset": self.dataset_name,
+                    "query_cell_type": cell_type,
+                    "query_region": region,
+                    "materialization_version": mat_version,
+                    "warnings": warnings,
+                    "neurons_df": empty_neurons_df,
+                }
+
+            rows: list[dict] = []
+            for _, row in matches.iterrows():
+                rid = row.get("pt_root_id")
+                if rid is None:
+                    continue
+                hierarchy = self._get_flywire_hierarchy(int(rid))
+                rows.append({
+                    "neuron_id": int(rid),
+                    "cell_type": cell_type,
+                    "cell_class": (
+                        hierarchy.get("cell_class") if hierarchy else None
+                    ),
+                    "region": (
+                        hierarchy.get("super_class") if hierarchy else None
+                    ),
+                    "n_pre_synapses": None,
+                    "n_post_synapses": None,
+                    "proofread": None,
+                })
+
+            neurons_df = pd.DataFrame(rows)
+
+            if region and not neurons_df.empty:
+                mask = neurons_df["region"].str.contains(
+                    region, case=False, na=False
+                )
+                neurons_df = neurons_df[mask].reset_index(drop=True)
+
+            return {
+                "dataset": self.dataset_name,
+                "query_cell_type": cell_type,
+                "query_region": region,
+                "materialization_version": mat_version,
+                "warnings": warnings,
+                "neurons_df": neurons_df,
+            }
+        except Exception as e:
+            logger.warning("Failed to query hierarchy table: %s", e)
+            warnings.append(f"Failed to query hierarchy table: {e}")
+            return {
+                "dataset": self.dataset_name,
+                "query_cell_type": cell_type,
+                "query_region": region,
+                "materialization_version": mat_version,
+                "warnings": warnings,
+                "neurons_df": empty_neurons_df,
+            }
+
+

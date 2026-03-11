@@ -48,5 +48,5 @@ class TestBuildNeuroglancerUrl:
         assert "segmentation" in layers
 
     def test_all_datasets_have_configs(self):
-        for dataset in ["minnie65", "flywire", "hemibrain", "fanc"]:
+        for dataset in ["minnie65", "flywire", "hemibrain"]:
             assert dataset in NEUROGLANCER_CONFIGS

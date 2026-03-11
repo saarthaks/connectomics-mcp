@@ -17,6 +17,7 @@ from connectomics_mcp.output_contracts.schemas import (
     NeuronInfoResponse,
     NucleusResolutionResult,
     RootIdValidationResponse,
+    NeuronsByTypeResponse,
 )
 from connectomics_mcp.registry import _backend_cache
 from connectomics_mcp.tools import cave_specific, universal
@@ -39,7 +40,7 @@ def _clear_backend_cache() -> None:
 class TestMinnie65:
     """Live tests against the MICrONS minnie65_public datastack."""
 
-    NUCLEUS_ID = 271171
+    NUCLEUS_ID = 264824  # resolved → 864691135571546917
 
     @pytest.fixture(autouse=True)
     def _setup(self, artifact_dir: Path) -> None:
@@ -103,7 +104,12 @@ class TestMinnie65:
 
 
 class TestFlyWire:
-    """Live tests against the FlyWire FAFB production datastack."""
+    """Live tests against the FlyWire FAFB production datastack.
+
+    Note: FlyWire requires dataset-level access permissions.
+    If the token lacks ``view`` permission for ``fafb``, the test
+    is skipped rather than failed.
+    """
 
     ROOT_ID = 720575940621039145  # DA1 PN
 
@@ -112,31 +118,83 @@ class TestFlyWire:
         _clear_backend_cache()
         self.artifact_dir = artifact_dir
 
-    def test_validate_and_get_neuron_info(self) -> None:
-        # Step 1: validate root ID
+    def _get_active_id(self):
+        """Validate root ID and return the active (possibly superseded) ID."""
         val_result = universal.validate_root_ids([self.ROOT_ID], "flywire")
         val_resp = RootIdValidationResponse(**val_result)
 
         assert val_resp.dataset == "flywire"
         assert len(val_resp.results) == 1
         validation = val_resp.results[0]
-        print(f"\n  root_id {self.ROOT_ID} is_current={validation.is_current}")
+
+        # If we got a permission error, skip
+        for w in val_resp.warnings:
+            if "missing_permission" in w or "FORBIDDEN" in w:
+                pytest.skip(f"FlyWire access denied: {w}")
 
         active_id = self.ROOT_ID
         if not validation.is_current and validation.suggested_current_id:
             active_id = validation.suggested_current_id
-            print(f"  -> superseded, using suggested_current_id={active_id}")
+            print(f"\n  root_id {self.ROOT_ID} superseded -> {active_id}")
+        else:
+            print(f"\n  root_id {self.ROOT_ID} is_current={validation.is_current}")
 
-        # Step 2: get neuron info
+        return active_id
+
+    def test_validate_and_get_neuron_info(self) -> None:
+        active_id = self._get_active_id()
+
         info_result = universal.get_neuron_info(active_id, "flywire")
         info_resp = NeuronInfoResponse(**info_result)
 
         assert info_resp.neuron_id == active_id
         assert info_resp.dataset == "flywire"
-        # Cell type may be None if not annotated, but response must be valid
-        print(f"  neuron_info: type={info_resp.cell_type}, class={info_resp.cell_class}")
+
+        # FlyWire-specific enrichment: hierarchy + NT
+        print(f"  cell_type={info_resp.cell_type}")
+        print(f"  classification_hierarchy={info_resp.classification_hierarchy}")
+        print(f"  neurotransmitter_type={info_resp.neurotransmitter_type}")
         print(f"  pre={info_resp.n_pre_synapses}, post={info_resp.n_post_synapses}")
-        print(f"  warnings={info_resp.warnings}")
+
+        # Synapse counts should now be populated (fixed select_columns bug)
+        assert info_resp.n_pre_synapses is not None, "n_pre_synapses should not be None"
+        assert info_resp.n_post_synapses is not None, "n_post_synapses should not be None"
+
+        # Hierarchy should be populated from hierarchical_neuron_annotations
+        assert info_resp.classification_hierarchy is not None, (
+            "classification_hierarchy should be populated for FlyWire"
+        )
+
+    def test_connectivity_with_nt(self) -> None:
+        active_id = self._get_active_id()
+
+        conn_result = universal.get_connectivity(active_id, "flywire")
+        conn_resp = ConnectivityResponse(**conn_result)
+
+        assert conn_resp.neuron_id == active_id
+        assert conn_resp.dataset == "flywire"
+        assert conn_resp.n_upstream_total + conn_resp.n_downstream_total > 0
+
+        # Artifact assertions
+        manifest = conn_resp.artifact_manifest
+        assert manifest is not None
+        artifact_path = Path(manifest.artifact_path)
+        assert artifact_path.exists()
+        df = pd.read_parquet(artifact_path)
+        assert len(df) == manifest.n_rows
+        assert len(df) > 0
+
+        # NT enrichment columns should be present
+        assert "partner_nt_type" in df.columns, (
+            "FlyWire connectivity artifact should have partner_nt_type column"
+        )
+        assert df["partner_nt_type"].notna().any(), (
+            "At least some partners should have NT predictions"
+        )
+
+        print(f"  connectivity: {conn_resp.n_upstream_total} up, {conn_resp.n_downstream_total} down")
+        print(f"  artifact: {artifact_path} ({manifest.n_rows} rows)")
+        print(f"  nt_distribution: {conn_resp.neurotransmitter_distribution}")
 
 
 # ── hemibrain (neuPrint) ─────────────────────────────────────────────

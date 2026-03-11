@@ -52,6 +52,8 @@ class NeuronInfoResponse(BaseModel):
     proofread: bool | None = None
     materialization_version: int | None = None
     neuroglancer_url: str = ""
+    neurotransmitter_type: str | None = None
+    classification_hierarchy: dict | None = None
     warnings: list[str] = []
 
 
@@ -80,6 +82,7 @@ class ConnectivityResponse(BaseModel):
         "for orientation only. Load artifact_manifest.artifact_path for the complete dataset."
     )
     neuroglancer_url: str = ""
+    neurotransmitter_distribution: dict | None = None
     artifact_manifest: ArtifactManifest | None = None
     warnings: list[str] = []
 
