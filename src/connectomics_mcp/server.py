@@ -6,7 +6,7 @@ import logging
 
 from mcp.server.fastmcp import FastMCP
 
-from connectomics_mcp.tools import cave_specific, universal
+from connectomics_mcp.tools import cave_specific, neuprint_specific, universal
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +14,42 @@ mcp = FastMCP("connectomics-mcp")
 
 
 @mcp.tool()
-def get_neuron_info(neuron_id: int | str, dataset: str) -> dict:
+def resolve_nucleus_ids(nucleus_ids: list[int], dataset: str) -> dict:
+    """Resolve MICrONS nucleus IDs to current pt_root_ids.
+
+    Nucleus IDs are the stable cross-version cell identifiers in
+    MICrONS (minnie65). Unlike pt_root_ids, which change with
+    proofreading, nucleus IDs never change. Use this tool to convert
+    nucleus IDs to current pt_root_ids before passing them to other
+    tools.
+
+    A ``merge_conflict`` result means the segment at this nucleus's
+    location contains multiple detected nuclei — the segmentation
+    likely has an unresolved merge error.
+
+    A ``no_segment`` result means no segment was found at this
+    nucleus's position.
+
+    Parameters
+    ----------
+    nucleus_ids : list[int]
+        Nucleus IDs to resolve.
+    dataset : str
+        Dataset to query. Must be "minnie65".
+
+    Returns
+    -------
+    dict
+        NucleusResolutionResult with per-nucleus resolution status,
+        pt_root_ids, and conflict information.
+    """
+    return cave_specific.resolve_nucleus_ids(nucleus_ids, dataset)
+
+
+@mcp.tool()
+def get_neuron_info(
+    neuron_id: int | str, dataset: str, nucleus_id: int | None = None
+) -> dict:
     """Get basic information about a neuron.
 
     Returns cell type, soma position, synapse counts, and a
@@ -29,6 +64,10 @@ def get_neuron_info(neuron_id: int | str, dataset: str) -> dict:
     dataset : str
         Dataset to query. Supported: "minnie65", "flywire",
         "fanc", "hemibrain".
+    nucleus_id : int, optional
+        MICrONS nucleus ID (minnie65 only). If provided, resolves
+        to the current pt_root_id before querying. Nucleus IDs are
+        stable cross-version identifiers.
 
     Returns
     -------
@@ -38,7 +77,7 @@ def get_neuron_info(neuron_id: int | str, dataset: str) -> dict:
         n_post_synapses, proofread, materialization_version,
         neuroglancer_url, warnings.
     """
-    return universal.get_neuron_info(neuron_id, dataset)
+    return universal.get_neuron_info(neuron_id, dataset, nucleus_id=nucleus_id)
 
 
 @mcp.tool()
@@ -190,6 +229,72 @@ def get_neurons_by_type(
 
 
 @mcp.tool()
+def query_annotation_table(
+    dataset: str,
+    table_name: str,
+    filter_equal_dict: dict | None = None,
+    filter_in_dict: dict | None = None,
+) -> dict:
+    """Query a CAVE annotation table.
+
+    Returns a summary with row count and schema description. The
+    complete query result is saved as a Parquet artifact — load it
+    with ``pd.read_parquet(artifact_path)`` for full analysis.
+
+    Only available for CAVE datasets (minnie65, flywire, fanc).
+
+    Parameters
+    ----------
+    dataset : str
+        Dataset to query. Must be a CAVE dataset.
+    table_name : str
+        Name of the annotation table (e.g.
+        "aibs_metamodel_celltypes_v661", "nucleus_detection_v0").
+    filter_equal_dict : dict, optional
+        Equality filters (column → value).
+    filter_in_dict : dict, optional
+        Membership filters (column → list of values).
+
+    Returns
+    -------
+    dict
+        AnnotationTableResponse with artifact_manifest pointing to
+        the full table on disk, plus n_total and schema_description.
+    """
+    return cave_specific.query_annotation_table(
+        dataset, table_name, filter_equal_dict, filter_in_dict
+    )
+
+
+@mcp.tool()
+def get_edit_history(neuron_id: int, dataset: str) -> dict:
+    """Get edit history for a CAVE neuron.
+
+    Returns a summary with edit count and timestamp range. The
+    complete edit log is saved as a Parquet artifact — load it
+    with ``pd.read_parquet(artifact_path)`` for full analysis.
+
+    Only available for CAVE datasets (minnie65, flywire, fanc).
+
+    Parameters
+    ----------
+    neuron_id : int
+        Root ID of the neuron.
+    dataset : str
+        Dataset to query. Must be a CAVE dataset: "minnie65",
+        "flywire", or "fanc".
+
+    Returns
+    -------
+    dict
+        EditHistoryResponse with artifact_manifest pointing to
+        the full edit log on disk, plus n_edits_total,
+        first_edit_timestamp, and last_edit_timestamp.
+    """
+    return cave_specific.get_edit_history(neuron_id, dataset)
+
+
+@mcp.tool()
 def get_region_connectivity(
     dataset: str,
     source_region: str | None = None,
@@ -220,6 +325,64 @@ def get_region_connectivity(
         top_5_connections, and total_synapses.
     """
     return universal.get_region_connectivity(dataset, source_region, target_region)
+
+
+@mcp.tool()
+def fetch_cypher(query: str, dataset: str) -> dict:
+    """Execute a Cypher query against a neuPrint dataset.
+
+    Returns a summary with row count and column names. The complete
+    query result is saved as a Parquet artifact — load it with
+    ``pd.read_parquet(artifact_path)`` for full analysis.
+
+    Only available for neuPrint datasets (hemibrain).
+
+    Parameters
+    ----------
+    query : str
+        Cypher query string.
+    dataset : str
+        Dataset to query. Must be a neuPrint dataset: "hemibrain".
+
+    Returns
+    -------
+    dict
+        CypherQueryResponse with artifact_manifest pointing to
+        the full query result on disk, plus n_rows and columns.
+    """
+    return neuprint_specific.fetch_cypher(query, dataset)
+
+
+@mcp.tool()
+def get_synapse_compartments(
+    neuron_id: int | str, dataset: str, direction: str = "input"
+) -> dict:
+    """Get synapse distribution across ROI compartments for a neuron.
+
+    Returns per-ROI synapse counts and fractions for the specified
+    direction. Response is inherently small (one entry per ROI).
+
+    Only available for neuPrint datasets (hemibrain).
+
+    Parameters
+    ----------
+    neuron_id : int | str
+        Body ID of the neuron.
+    dataset : str
+        Dataset to query. Must be a neuPrint dataset: "hemibrain".
+    direction : str
+        "input" for post-synaptic or "output" for pre-synaptic
+        (default "input").
+
+    Returns
+    -------
+    dict
+        SynapseCompartmentResponse with per-ROI compartment stats
+        and total synapse count.
+    """
+    return neuprint_specific.get_synapse_compartments(
+        neuron_id, dataset, direction
+    )
 
 
 def main() -> None:

@@ -310,6 +310,53 @@ class CAVEBackend(ConnectomeBackend):
             if "neuroglancer_url" not in partners_df.columns:
                 partners_df["neuroglancer_url"] = ""
 
+        # MICrONS nucleus ID enrichment: annotate partners with nucleus IDs
+        if self.dataset_name == "minnie65" and not partners_df.empty:
+            nuc_table = NUCLEUS_TABLES.get(self.dataset_name, "nucleus_detection_v0")
+            all_partner_ids = partners_df["partner_id"].unique().tolist()
+            try:
+                nuc_df = self.client.materialize.query_table(
+                    nuc_table,
+                    filter_in_dict={"pt_root_id": all_partner_ids},
+                    select_columns=["id", "pt_root_id"],
+                )
+                if not nuc_df.empty:
+                    # Group nucleus IDs by pt_root_id
+                    nuc_groups = nuc_df.groupby("pt_root_id")["id"].apply(list).to_dict()
+
+                    nuc_ids: list[int | None] = []
+                    conflicts: list[bool] = []
+                    for pid in partners_df["partner_id"]:
+                        nids = nuc_groups.get(int(pid), [])
+                        if len(nids) == 1:
+                            nuc_ids.append(int(nids[0]))
+                            conflicts.append(False)
+                        elif len(nids) > 1:
+                            # Merge conflict — multiple nuclei in one segment
+                            nuc_ids.append(None)
+                            conflicts.append(True)
+                            logger.debug(
+                                "Partner %d has multiple nucleus IDs: %s",
+                                int(pid), nids,
+                            )
+                        else:
+                            nuc_ids.append(None)
+                            conflicts.append(False)
+
+                    partners_df = partners_df.copy()
+                    partners_df["partner_nucleus_id"] = nuc_ids
+                    partners_df["partner_nucleus_conflict"] = conflicts
+                else:
+                    partners_df = partners_df.copy()
+                    partners_df["partner_nucleus_id"] = None
+                    partners_df["partner_nucleus_conflict"] = False
+            except Exception as e:
+                logger.warning("Failed to enrich partners with nucleus IDs: %s", e)
+                warnings.append(f"Failed to enrich partners with nucleus IDs: {e}")
+                partners_df = partners_df.copy()
+                partners_df["partner_nucleus_id"] = None
+                partners_df["partner_nucleus_conflict"] = False
+
         return {
             "neuron_id": root_id,
             "dataset": self.dataset_name,
@@ -487,6 +534,127 @@ class CAVEBackend(ConnectomeBackend):
             "warnings": warnings,
         }
 
+    def resolve_nucleus_ids(
+        self,
+        nucleus_ids: list[int],
+        materialization_version: int | None = None,
+    ) -> dict[str, Any]:
+        """Resolve nucleus IDs to current pt_root_ids via nucleus_detection_v0.
+
+        Parameters
+        ----------
+        nucleus_ids : list[int]
+            Nucleus IDs to resolve.
+        materialization_version : int, optional
+            Materialization version to query at. Defaults to latest.
+
+        Returns
+        -------
+        dict
+            Raw resolution result with keys: dataset, materialization_version,
+            resolutions, n_resolved, n_merge_conflicts, n_no_segment, warnings.
+        """
+        logger.debug(
+            "resolve_nucleus_ids(%s) on %s", nucleus_ids, self.dataset_name
+        )
+
+        warnings: list[str] = []
+        mat_version = materialization_version
+        if mat_version is None:
+            try:
+                mat_version = self.client.materialize.version
+            except Exception:
+                mat_version = 0
+
+        nuc_table = NUCLEUS_TABLES.get(self.dataset_name, "nucleus_detection_v0")
+
+        # Query nucleus table for the given IDs
+        nuc_df = pd.DataFrame()
+        try:
+            nuc_df = self.client.materialize.query_table(
+                nuc_table,
+                filter_in_dict={"id": nucleus_ids},
+                select_columns=["id", "pt_root_id"],
+            )
+        except Exception as e:
+            logger.warning("Failed to query nucleus table %s: %s", nuc_table, e)
+            warnings.append(f"Failed to query nucleus table: {e}")
+
+        # Build lookup: nucleus_id → pt_root_id
+        nuc_to_root: dict[int, int | None] = {}
+        if not nuc_df.empty:
+            for _, row in nuc_df.iterrows():
+                nid = int(row["id"])
+                rid = row.get("pt_root_id")
+                if rid is not None and pd.notna(rid):
+                    nuc_to_root[nid] = int(rid)
+                else:
+                    nuc_to_root[nid] = None
+
+        # Detect merge conflicts: group nucleus IDs by pt_root_id
+        root_to_nucs: dict[int, list[int]] = {}
+        for nid, rid in nuc_to_root.items():
+            if rid is not None:
+                root_to_nucs.setdefault(rid, []).append(nid)
+
+        merge_conflict_nucs: set[int] = set()
+        for rid, nids in root_to_nucs.items():
+            if len(nids) > 1:
+                merge_conflict_nucs.update(nids)
+
+        # Build resolutions
+        resolutions: list[dict[str, Any]] = []
+        n_resolved = 0
+        n_merge_conflicts = 0
+        n_no_segment = 0
+
+        for nid in nucleus_ids:
+            rid = nuc_to_root.get(nid)
+
+            if nid not in nuc_to_root or rid is None:
+                # No segment found
+                resolutions.append({
+                    "nucleus_id": nid,
+                    "pt_root_id": None,
+                    "resolution_status": "no_segment",
+                    "conflicting_nucleus_ids": [],
+                    "materialization_version": mat_version,
+                })
+                n_no_segment += 1
+            elif nid in merge_conflict_nucs:
+                # Merge conflict
+                conflicting = [
+                    other for other in root_to_nucs[rid] if other != nid
+                ]
+                resolutions.append({
+                    "nucleus_id": nid,
+                    "pt_root_id": rid,
+                    "resolution_status": "merge_conflict",
+                    "conflicting_nucleus_ids": conflicting,
+                    "materialization_version": mat_version,
+                })
+                n_merge_conflicts += 1
+            else:
+                # Clean 1:1 resolution
+                resolutions.append({
+                    "nucleus_id": nid,
+                    "pt_root_id": rid,
+                    "resolution_status": "resolved",
+                    "conflicting_nucleus_ids": [],
+                    "materialization_version": mat_version,
+                })
+                n_resolved += 1
+
+        return {
+            "dataset": self.dataset_name,
+            "materialization_version": mat_version,
+            "resolutions": resolutions,
+            "n_resolved": n_resolved,
+            "n_merge_conflicts": n_merge_conflicts,
+            "n_no_segment": n_no_segment,
+            "warnings": warnings,
+        }
+
     def get_region_connectivity(
         self,
         source_region: str | None = None,
@@ -638,6 +806,162 @@ class CAVEBackend(ConnectomeBackend):
             "warnings": warnings,
             "region_df": region_df,
         }
+
+    def query_annotation_table(
+        self,
+        table_name: str,
+        filter_equal_dict: dict[str, Any] | None = None,
+        filter_in_dict: dict[str, list] | None = None,
+    ) -> dict[str, Any]:
+        """Query an arbitrary CAVE annotation table.
+
+        Parameters
+        ----------
+        table_name : str
+            Name of the annotation table to query.
+        filter_equal_dict : dict, optional
+            Equality filters passed to ``client.materialize.query_table()``.
+        filter_in_dict : dict, optional
+            Membership filters passed to ``client.materialize.query_table()``.
+
+        Returns
+        -------
+        dict
+            Keys: dataset, table_name, materialization_version, warnings,
+            table_df, schema_description.
+        """
+        logger.debug(
+            "query_annotation_table(%s) on %s", table_name, self.dataset_name
+        )
+
+        warnings: list[str] = []
+        mat_version = None
+        try:
+            mat_version = self.client.materialize.version
+        except Exception:
+            pass
+
+        query_kwargs: dict[str, Any] = {}
+        if filter_equal_dict:
+            query_kwargs["filter_equal_dict"] = filter_equal_dict
+        if filter_in_dict:
+            query_kwargs["filter_in_dict"] = filter_in_dict
+
+        try:
+            table_df = self.client.materialize.query_table(
+                table_name, **query_kwargs
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to query annotation table %s: %s", table_name, e
+            )
+            warnings.append(f"Failed to query annotation table: {e}")
+            table_df = pd.DataFrame()
+
+        # Build schema description from DataFrame dtypes
+        if not table_df.empty:
+            col_descs = [f"{col}: {dtype}" for col, dtype in table_df.dtypes.items()]
+            schema_description = "; ".join(col_descs)
+        else:
+            schema_description = "Empty result"
+
+        return {
+            "dataset": self.dataset_name,
+            "table_name": table_name,
+            "materialization_version": mat_version,
+            "warnings": warnings,
+            "table_df": table_df,
+            "schema_description": schema_description,
+        }
+
+    def get_edit_history(self, neuron_id: int) -> dict[str, Any]:
+        """Fetch edit history for a CAVE neuron.
+
+        Parameters
+        ----------
+        neuron_id : int
+            Root ID of the neuron.
+
+        Returns
+        -------
+        dict
+            Keys: neuron_id, dataset, is_current, materialization_version,
+            warnings, edits_df.
+        """
+        root_id = int(neuron_id)
+        logger.debug("get_edit_history(%d) on %s", root_id, self.dataset_name)
+
+        warnings: list[str] = []
+
+        # Check root ID currency
+        is_current = True
+        try:
+            is_latest = self.client.chunkedgraph.is_latest_roots([root_id])
+            is_current = bool(is_latest[0]) if is_latest else True
+            if not is_current:
+                warnings.append(
+                    f"Root ID {root_id} is outdated. "
+                    f"Use `validate_root_ids()` to get current IDs."
+                )
+        except Exception as e:
+            logger.warning("Failed to check root ID currency: %s", e)
+            warnings.append(f"Could not verify root ID currency: {e}")
+
+        mat_version = None
+        try:
+            mat_version = self.client.materialize.version
+        except Exception:
+            pass
+
+        # Fetch edit changelog
+        edits_df = pd.DataFrame(
+            columns=["operation_id", "timestamp", "operation_type", "user_id"]
+        )
+        try:
+            changelog = self.client.chunkedgraph.get_tabular_changelog(root_id)
+            if isinstance(changelog, pd.DataFrame) and not changelog.empty:
+                rows: list[dict] = []
+                for idx, row in changelog.iterrows():
+                    is_merge = row.get("is_merge", None)
+                    if is_merge is True:
+                        op_type = "merge"
+                    elif is_merge is False:
+                        op_type = "split"
+                    else:
+                        op_type = "unknown"
+                    rows.append({
+                        "operation_id": int(idx) if isinstance(idx, (int, float)) else len(rows),
+                        "timestamp": str(row.get("timestamp", "")),
+                        "operation_type": op_type,
+                        "user_id": str(row.get("user_id", "")),
+                    })
+                edits_df = pd.DataFrame(rows)
+        except Exception as e:
+            logger.warning("Failed to fetch edit changelog for %d: %s", root_id, e)
+            warnings.append(f"Failed to fetch edit changelog: {e}")
+
+        return {
+            "neuron_id": root_id,
+            "dataset": self.dataset_name,
+            "is_current": is_current,
+            "materialization_version": mat_version,
+            "warnings": warnings,
+            "edits_df": edits_df,
+        }
+
+    def fetch_cypher(self, query: str) -> dict[str, Any]:
+        """Not applicable for CAVE datasets."""
+        from connectomics_mcp.exceptions import DatasetNotSupported
+
+        raise DatasetNotSupported(self.dataset_name, "neuprint")
+
+    def get_synapse_compartments(
+        self, neuron_id: int | str, direction: str = "input"
+    ) -> dict[str, Any]:
+        """Not applicable for CAVE datasets."""
+        from connectomics_mcp.exceptions import DatasetNotSupported
+
+        raise DatasetNotSupported(self.dataset_name, "neuprint")
 
     def get_neurons_by_type(
         self, cell_type: str, region: str | None = None

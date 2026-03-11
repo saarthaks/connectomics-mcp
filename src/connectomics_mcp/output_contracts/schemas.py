@@ -11,6 +11,8 @@ their full response directly.  The words "truncated", "n_shown",
 
 from __future__ import annotations
 
+from enum import Enum
+
 from pydantic import BaseModel
 
 
@@ -149,6 +151,36 @@ class ProofreadingStatusResponse(BaseModel):
     strategy_dendrite: str | None = None
     n_edits: int | None = None
     last_edit_timestamp: str | None = None
+    warnings: list[str] = []
+
+
+class NucleusResolutionStatus(str, Enum):
+    """Resolution status for a nucleus ID → pt_root_id mapping."""
+
+    RESOLVED = "resolved"
+    MERGE_CONFLICT = "merge_conflict"
+    NO_SEGMENT = "no_segment"
+
+
+class NucleusResolution(BaseModel):
+    """Resolution result for a single nucleus ID."""
+
+    nucleus_id: int
+    pt_root_id: int | None = None
+    resolution_status: NucleusResolutionStatus
+    conflicting_nucleus_ids: list[int] = []
+    materialization_version: int
+
+
+class NucleusResolutionResult(BaseModel):
+    """Scalar-only — bounded by input list size."""
+
+    dataset: str
+    materialization_version: int
+    resolutions: list[NucleusResolution]
+    n_resolved: int
+    n_merge_conflicts: int
+    n_no_segment: int
     warnings: list[str] = []
 
 

@@ -258,6 +258,154 @@ class NeuPrintBackend(ConnectomeBackend):
 
         raise DatasetNotSupported(self.dataset_name, "cave")
 
+    def query_annotation_table(
+        self,
+        table_name: str,
+        filter_equal_dict: dict[str, Any] | None = None,
+        filter_in_dict: dict[str, list] | None = None,
+    ) -> dict[str, Any]:
+        """Not applicable for neuPrint datasets."""
+        from connectomics_mcp.exceptions import DatasetNotSupported
+
+        raise DatasetNotSupported(self.dataset_name, "cave")
+
+    def get_edit_history(self, neuron_id: int) -> dict[str, Any]:
+        """Not applicable for neuPrint datasets."""
+        from connectomics_mcp.exceptions import DatasetNotSupported
+
+        raise DatasetNotSupported(self.dataset_name, "cave")
+
+    def fetch_cypher(self, query: str) -> dict[str, Any]:
+        """Execute a Cypher query against neuPrint.
+
+        Parameters
+        ----------
+        query : str
+            Cypher query string.
+
+        Returns
+        -------
+        dict
+            Keys: dataset, query, materialization_version, warnings, result_df.
+        """
+        logger.debug("fetch_cypher on %s", self.dataset_name)
+
+        warnings: list[str] = []
+
+        try:
+            result_df = self.client.fetch_custom(query)
+        except Exception as e:
+            logger.warning("Cypher query failed: %s", e)
+            warnings.append(f"Cypher query failed: {e}")
+            result_df = pd.DataFrame()
+
+        return {
+            "dataset": self.dataset_name,
+            "query": query,
+            "materialization_version": None,
+            "warnings": warnings,
+            "result_df": result_df,
+        }
+
+    def get_synapse_compartments(
+        self, neuron_id: int | str, direction: str = "input"
+    ) -> dict[str, Any]:
+        """Fetch per-ROI synapse distribution from neuPrint.
+
+        Parameters
+        ----------
+        neuron_id : int | str
+            Body ID of the neuron.
+        direction : str
+            "input" for post-synaptic or "output" for pre-synaptic.
+
+        Returns
+        -------
+        dict
+            Keys: neuron_id, dataset, direction, compartments, n_total_synapses,
+            warnings.
+        """
+        body_id = int(neuron_id)
+        logger.debug(
+            "get_synapse_compartments(%d, %s) on %s",
+            body_id, direction, self.dataset_name,
+        )
+
+        from neuprint import NeuronCriteria as NC, fetch_neurons
+
+        warnings: list[str] = []
+        compartments: list[dict[str, Any]] = []
+        n_total = 0
+
+        try:
+            neuron_df, roi_df = fetch_neurons(NC(bodyId=body_id))
+        except Exception as e:
+            logger.warning("Failed to fetch neuron for compartments: %s", e)
+            warnings.append(f"Failed to fetch neuron: {e}")
+            return {
+                "neuron_id": body_id,
+                "dataset": self.dataset_name,
+                "direction": direction,
+                "compartments": [],
+                "n_total_synapses": 0,
+                "warnings": warnings,
+            }
+
+        if roi_df.empty:
+            warnings.append(f"No ROI data found for bodyId {body_id}")
+            return {
+                "neuron_id": body_id,
+                "dataset": self.dataset_name,
+                "direction": direction,
+                "compartments": [],
+                "n_total_synapses": 0,
+                "warnings": warnings,
+            }
+
+        # Filter to this body's ROI entries
+        body_rois = roi_df[roi_df["bodyId"] == body_id]
+        if body_rois.empty:
+            warnings.append(f"No ROI data found for bodyId {body_id}")
+            return {
+                "neuron_id": body_id,
+                "dataset": self.dataset_name,
+                "direction": direction,
+                "compartments": [],
+                "n_total_synapses": 0,
+                "warnings": warnings,
+            }
+
+        # Select synapse count column based on direction
+        count_col = "post" if direction == "input" else "pre"
+
+        # Build compartment entries from ROI data
+        for _, row in body_rois.iterrows():
+            roi_name = row.get("roi", "unknown")
+            count = int(row.get(count_col, 0))
+            if count > 0:
+                compartments.append({
+                    "compartment": roi_name,
+                    "n_synapses": count,
+                })
+                n_total += count
+
+        # Compute fractions and sort by count descending
+        for comp in compartments:
+            comp["fraction"] = (
+                round(comp["n_synapses"] / n_total, 4) if n_total > 0 else 0.0
+            )
+
+        compartments.sort(key=lambda c: c["n_synapses"], reverse=True)
+
+        return {
+            "neuron_id": body_id,
+            "dataset": self.dataset_name,
+            "direction": direction,
+            "compartments": compartments,
+            "n_total_synapses": n_total,
+            "warnings": warnings,
+        }
+
     def get_region_connectivity(
         self,
         source_region: str | None = None,

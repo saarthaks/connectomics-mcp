@@ -76,6 +76,32 @@ class TestGetNeuronInfo:
         result = get_neuron_info(720575940621039145, "minnie65")
         assert result["neuroglancer_url"].startswith("https://")
 
+    def test_nucleus_id_resolved(self, mock_cave_backend):
+        """Provide nucleus_id for minnie65; should resolve and return info."""
+        result = get_neuron_info(0, "minnie65", nucleus_id=100001)
+        resp = NeuronInfoResponse(**result)
+        # Should have used the resolved pt_root_id 864691135000001
+        assert resp.neuron_id == 864691135000001
+        assert resp.warnings == []
+
+    def test_nucleus_id_merge_conflict_warning(self, mock_cave_backend):
+        """Merge conflict should proceed with warning."""
+        result = get_neuron_info(0, "minnie65", nucleus_id=100002)
+        resp = NeuronInfoResponse(**result)
+        assert resp.neuron_id == 864691135000099
+        assert any("merge error" in w for w in resp.warnings)
+        assert any("100003" in w for w in resp.warnings)
+
+    def test_nucleus_id_no_segment_raises(self, mock_cave_backend):
+        """No segment should raise ValueError."""
+        with pytest.raises(ValueError, match="no associated segment"):
+            get_neuron_info(0, "minnie65", nucleus_id=999999)
+
+    def test_nucleus_id_non_minnie65_raises(self, mock_neuprint_backend):
+        """nucleus_id on non-minnie65 should raise DatasetNotSupported."""
+        with pytest.raises(DatasetNotSupported):
+            get_neuron_info(12345, "hemibrain", nucleus_id=100001)
+
 
 class TestGetConnectivity:
     @pytest.fixture(autouse=True)
@@ -186,6 +212,23 @@ class TestGetConnectivity:
         assert "neuroglancer_url" in df.columns
         # All URLs should be non-empty
         assert all(url.startswith("https://") for url in df["neuroglancer_url"])
+
+    def test_minnie65_artifact_has_nucleus_columns(self, mock_cave_backend):
+        """MICrONS connectivity artifact should include nucleus enrichment."""
+        result = get_connectivity(720575940621039145, "minnie65")
+        manifest = result["artifact_manifest"]
+        df = pd.read_parquet(manifest["artifact_path"])
+
+        assert "partner_nucleus_id" in df.columns
+        assert "partner_nucleus_conflict" in df.columns
+
+        # At least some partners should have nucleus IDs
+        has_nuc = df["partner_nucleus_id"].notna().sum()
+        assert has_nuc > 0
+
+        # At least one conflict should exist (partner 3 upstream)
+        has_conflict = df["partner_nucleus_conflict"].sum()
+        assert has_conflict >= 1
 
 
 class TestValidateRootIds:

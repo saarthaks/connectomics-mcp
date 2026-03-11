@@ -117,6 +117,8 @@ class ConnectivityResponse(BaseModel):
 | `weight_normalized` | float32 | fraction of total input or output synapses |
 | `partner_region` | str | primary ROI of partner soma |
 | `neuroglancer_url` | str | URL highlighting this specific connection |
+| `partner_nucleus_id` | int64 \| null | MICrONS only: nucleus ID of partner (null if merge conflict or no nucleus entry) |
+| `partner_nucleus_conflict` | bool | MICrONS only: True if partner pt_root_id maps to multiple nucleus IDs (merge error) |
 
 ---
 
@@ -223,6 +225,35 @@ class ProofreadingStatusResponse(BaseModel):
 
 ---
 
+### `resolve_nucleus_ids` — scalar only, no artifact (minnie65 only)
+
+Resolves MICrONS nucleus IDs to current pt_root_ids via `nucleus_detection_v0`.
+
+```python
+class NucleusResolutionStatus(str, Enum):
+    RESOLVED = "resolved"           # 1:1 mapping, safe to use
+    MERGE_CONFLICT = "merge_conflict"  # this nucleus shares a pt_root_id with others
+    NO_SEGMENT = "no_segment"       # nucleus has no associated pt_root_id
+
+class NucleusResolution(BaseModel):
+    nucleus_id: int
+    pt_root_id: int | None
+    resolution_status: NucleusResolutionStatus
+    conflicting_nucleus_ids: list[int] = []
+    materialization_version: int
+
+class NucleusResolutionResult(BaseModel):
+    dataset: str
+    materialization_version: int
+    resolutions: list[NucleusResolution]
+    n_resolved: int
+    n_merge_conflicts: int
+    n_no_segment: int
+    warnings: list[str] = []
+```
+
+---
+
 ### `query_annotation_table` — artifact required
 
 ```python
@@ -313,6 +344,7 @@ class SynapseCompartmentResponse(BaseModel):
 | `build_neuroglancer_url` | No | Single URL string |
 | `validate_root_ids` | No | One result per input ID |
 | `get_proofreading_status` | No | ~8 scalar fields |
+| `resolve_nucleus_ids` | No | One result per input nucleus ID |
 | `query_annotation_table` | **Yes** | Unbounded annotation rows |
 | `get_edit_history` | **Yes** | Unbounded edit log |
 | `fetch_cypher` | **Yes** | Unbounded query result |

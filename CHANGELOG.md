@@ -1,5 +1,87 @@
 # Changelog
 
+## 2026-03-10 — Session 9
+
+### Added
+- `tests/test_integration.py`: 10 integration tests covering server setup, cross-tool workflows, error propagation, and artifact consistency
+- Enhanced `README.md`: expanded from 46 → ~170 lines with artifact-first explanation, full tool reference, example workflow, configuration guide, development instructions
+- `pyproject.toml` metadata: license (MIT), keywords, classifiers, readme reference, `[dev]` optional dependencies
+- Test count: 130 total (all passing)
+
+### Notes
+- Integration tests verify: MCP server name, all 12 tools registered, validate→info→connectivity workflow chains, neuPrint multi-tool workflow, StaleRootIdError consistency across tools, DatasetNotSupported across tiers, artifact round-trip correctness, shared artifact directory
+- `get_neuron_at_timepoint` remains 📋 Planned — not part of the KICKSTART_PROMPT.md session order
+- All tests use mocked backends — no live API calls
+
+---
+
+## 2026-03-10 — Session 8
+
+### Added
+- `fetch_cypher` tool (neuPrint-specific): executes arbitrary Cypher queries via `client.fetch_custom()`, saves complete result as Parquet artifact, returns `CypherQueryResponse` with query echo, row count, and column names
+- `get_synapse_compartments` tool (neuPrint-specific): fetches per-ROI synapse distribution via `fetch_neurons` roi_df, returns `SynapseCompartmentResponse` with compartment names, synapse counts, and fractions
+- `format_cypher_query` and `format_synapse_compartments` formatters
+- `fetch_cypher` and `get_synapse_compartments` backend methods on `NeuPrintBackend`
+- Abstract methods `fetch_cypher` and `get_synapse_compartments` on `ConnectomeBackend` base class
+- CAVE stubs for both tools (raise `DatasetNotSupported`)
+- `tools/neuprint_specific.py`: new module for neuPrint-specific tools (Tier 3)
+- 14 new tests: 7 for `fetch_cypher`, 7 for `get_synapse_compartments`
+- Test count: 120 total (all passing)
+
+### Notes
+- `fetch_cypher` has no staleness check (arbitrary query, not single neuron)
+- `get_synapse_compartments` uses ROIs as compartments — hemibrain doesn't expose morphological compartment labels (axon/dendrite) via standard neuPrint API
+- `get_synapse_compartments` direction: "input" uses post column, "output" uses pre column from roi_df
+- Both tools are neuPrint-only (Tier 3); CAVE datasets raise `DatasetNotSupported`
+- `fetch_cypher` artifact cache key uses `neuron_id=None` (arbitrary query)
+- All Tier 1, 2, and 3 tools are now complete
+
+---
+
+## 2026-03-10 — Session 7
+
+### Added
+- `query_annotation_table` tool (CAVE-specific): queries arbitrary CAVE annotation tables with optional `filter_equal_dict` and `filter_in_dict`, saves complete result as Parquet artifact, returns `AnnotationTableResponse` with row count and auto-generated `schema_description` from DataFrame dtypes
+- `get_edit_history` tool (CAVE-specific): fetches neuron edit changelog via `chunkedgraph.get_tabular_changelog()`, saves as Parquet artifact with columns `operation_id`, `timestamp`, `operation_type` ("merge"/"split"), `user_id`; returns `EditHistoryResponse` with edit count and timestamp range
+- `format_annotation_table` and `format_edit_history` formatters
+- `query_annotation_table` and `get_edit_history` backend methods on `CAVEBackend`
+- Abstract methods `query_annotation_table` and `get_edit_history` on `ConnectomeBackend` base class
+- neuPrint stubs for both tools (raise `DatasetNotSupported`)
+- 14 new tests: 7 for `query_annotation_table`, 7 for `get_edit_history`
+- Test count: 106 total (all passing)
+
+### Notes
+- `query_annotation_table` has no staleness check (table-level query, not single neuron)
+- `get_edit_history` has standard staleness gate (raises `StaleRootIdError` for stale root IDs)
+- `query_annotation_table` passes `filter_equal_dict` and `filter_in_dict` directly to `client.materialize.query_table()` — no filter reinvention
+- `schema_description` is auto-generated from `df.dtypes` since CAVE has no table-level docstrings
+- Artifact cache key uses `neuron_id=None` for `query_annotation_table` (table-level query)
+- `get_edit_history` maps CAVE changelog's `is_merge` bool to `operation_type` ("merge"/"split")
+
+---
+
+## 2026-03-10 — Session 6
+
+### Added
+- `resolve_nucleus_ids` tool (CAVE-specific, minnie65-only): resolves MICrONS nucleus IDs to current pt_root_ids via `nucleus_detection_v0`, with merge conflict and no-segment detection
+- `NucleusResolutionResult`, `NucleusResolution`, `NucleusResolutionStatus` schemas
+- `format_nucleus_resolution` formatter
+- `resolve_nucleus_ids` backend method on `CAVEBackend`
+- Optional `nucleus_id` parameter on `get_neuron_info` (minnie65 only): resolves nucleus → pt_root_id internally, warns on merge conflicts, raises on no-segment
+- MICrONS nucleus enrichment in `get_connectivity` artifact: `partner_nucleus_id` and `partner_nucleus_conflict` columns added to Parquet for minnie65 queries
+- 12 new tests: 7 for `resolve_nucleus_ids`, 4 for `get_neuron_info` nucleus_id, 1 for connectivity nucleus columns
+- Test count: 92 total (all passing)
+
+### Notes
+- Nucleus IDs are MICrONS-specific — no equivalent stable cell identifier in FlyWire or hemibrain
+- `resolve_nucleus_ids` tool rejects non-minnie65 datasets with `DatasetNotSupported`
+- Merge conflicts detected by grouping nucleus entries by pt_root_id (real backend queries full table)
+- Connectivity nucleus enrichment is a post-query join in the CAVE backend, not the formatter
+- `partner_nucleus_id` is null when partner has multiple nuclei (merge conflict) or no nucleus entry
+- `partner_nucleus_conflict` is True only for the merge conflict case
+
+---
+
 ## 2026-03-10 — Session 5
 
 ### Added

@@ -11,14 +11,22 @@ import pandas as pd
 from connectomics_mcp.artifacts.writer import save_artifact
 from connectomics_mcp.neuroglancer.url_builder import build_neuroglancer_url
 from connectomics_mcp.output_contracts.schemas import (
+    AnnotationTableResponse,
+    CompartmentStats,
     ConnectivityResponse,
+    CypherQueryResponse,
+    EditHistoryResponse,
     NeuronInfoResponse,
     NeuroglancerUrlResponse,
     NeuronsByTypeResponse,
+    NucleusResolution,
+    NucleusResolutionResult,
+    NucleusResolutionStatus,
     ProofreadingStatusResponse,
     RegionConnectivityResponse,
     RootIdValidationResponse,
     RootIdValidationResult,
+    SynapseCompartmentResponse,
     SynapticPartnerSample,
 )
 
@@ -395,5 +403,211 @@ def format_neurons_by_type(
         type_distribution=type_dist,
         region_distribution=region_dist,
         artifact_manifest=manifest,
+        warnings=raw.get("warnings", []),
+    )
+
+
+def format_annotation_table(
+    raw: dict[str, Any], dataset: str
+) -> AnnotationTableResponse:
+    """Convert raw backend annotation table data to AnnotationTableResponse.
+
+    Saves the complete table DataFrame as a Parquet artifact and
+    returns a lightweight summary.
+
+    Parameters
+    ----------
+    raw : dict
+        Raw dict from backend with key ``table_df`` (a pd.DataFrame).
+    dataset : str
+        Dataset name.
+
+    Returns
+    -------
+    AnnotationTableResponse
+        Summary + artifact manifest for the full annotation table.
+    """
+    table_df: pd.DataFrame = raw["table_df"]
+    mat_version = raw.get("materialization_version")
+
+    manifest = save_artifact(
+        df=table_df,
+        tool="annotation_table",
+        dataset=dataset,
+        neuron_id=None,
+        materialization_version=mat_version,
+    )
+
+    return AnnotationTableResponse(
+        dataset=dataset,
+        table_name=raw["table_name"],
+        n_total=len(table_df),
+        schema_description=raw.get("schema_description", ""),
+        artifact_manifest=manifest,
+        warnings=raw.get("warnings", []),
+    )
+
+
+def format_edit_history(
+    raw: dict[str, Any], dataset: str
+) -> EditHistoryResponse:
+    """Convert raw backend edit history data to EditHistoryResponse.
+
+    Saves the complete edit log DataFrame as a Parquet artifact and
+    returns a lightweight summary.
+
+    Parameters
+    ----------
+    raw : dict
+        Raw dict from backend with key ``edits_df`` (a pd.DataFrame).
+    dataset : str
+        Dataset name.
+
+    Returns
+    -------
+    EditHistoryResponse
+        Summary + artifact manifest for the full edit history.
+    """
+    edits_df: pd.DataFrame = raw["edits_df"]
+    mat_version = raw.get("materialization_version")
+    neuron_id = raw["neuron_id"]
+
+    manifest = save_artifact(
+        df=edits_df,
+        tool="edit_history",
+        dataset=dataset,
+        neuron_id=neuron_id,
+        materialization_version=mat_version,
+    )
+
+    first_edit = None
+    last_edit = None
+    if not edits_df.empty and "timestamp" in edits_df.columns:
+        first_edit = str(edits_df["timestamp"].min())
+        last_edit = str(edits_df["timestamp"].max())
+
+    return EditHistoryResponse(
+        neuron_id=neuron_id,
+        dataset=dataset,
+        n_edits_total=len(edits_df),
+        first_edit_timestamp=first_edit,
+        last_edit_timestamp=last_edit,
+        artifact_manifest=manifest,
+        warnings=raw.get("warnings", []),
+    )
+
+
+def format_nucleus_resolution(
+    raw: dict[str, Any], dataset: str
+) -> NucleusResolutionResult:
+    """Convert raw backend nucleus resolution data to NucleusResolutionResult.
+
+    Parameters
+    ----------
+    raw : dict
+        Raw dict from backend's resolve_nucleus_ids method.
+    dataset : str
+        Dataset name.
+
+    Returns
+    -------
+    NucleusResolutionResult
+        Validated, serializable response.
+    """
+    resolutions = [
+        NucleusResolution(
+            nucleus_id=r["nucleus_id"],
+            pt_root_id=r.get("pt_root_id"),
+            resolution_status=NucleusResolutionStatus(r["resolution_status"]),
+            conflicting_nucleus_ids=r.get("conflicting_nucleus_ids", []),
+            materialization_version=r["materialization_version"],
+        )
+        for r in raw.get("resolutions", [])
+    ]
+
+    return NucleusResolutionResult(
+        dataset=dataset,
+        materialization_version=raw.get("materialization_version", 0),
+        resolutions=resolutions,
+        n_resolved=raw.get("n_resolved", 0),
+        n_merge_conflicts=raw.get("n_merge_conflicts", 0),
+        n_no_segment=raw.get("n_no_segment", 0),
+        warnings=raw.get("warnings", []),
+    )
+
+
+def format_cypher_query(
+    raw: dict[str, Any], dataset: str
+) -> CypherQueryResponse:
+    """Convert raw backend Cypher query result to CypherQueryResponse.
+
+    Saves the complete result DataFrame as a Parquet artifact and
+    returns a lightweight summary.
+
+    Parameters
+    ----------
+    raw : dict
+        Raw dict from backend with key ``result_df`` (a pd.DataFrame).
+    dataset : str
+        Dataset name.
+
+    Returns
+    -------
+    CypherQueryResponse
+        Summary + artifact manifest for the full query result.
+    """
+    result_df: pd.DataFrame = raw["result_df"]
+    mat_version = raw.get("materialization_version")
+
+    manifest = save_artifact(
+        df=result_df,
+        tool="cypher",
+        dataset=dataset,
+        neuron_id=None,
+        materialization_version=mat_version,
+    )
+
+    return CypherQueryResponse(
+        dataset=dataset,
+        query=raw["query"],
+        n_rows=len(result_df),
+        columns=list(result_df.columns) if not result_df.empty else [],
+        artifact_manifest=manifest,
+        warnings=raw.get("warnings", []),
+    )
+
+
+def format_synapse_compartments(
+    raw: dict[str, Any], dataset: str
+) -> SynapseCompartmentResponse:
+    """Convert raw backend compartment data to SynapseCompartmentResponse.
+
+    Parameters
+    ----------
+    raw : dict
+        Raw dict from backend's get_synapse_compartments method.
+    dataset : str
+        Dataset name.
+
+    Returns
+    -------
+    SynapseCompartmentResponse
+        Validated, serializable response.
+    """
+    compartments = [
+        CompartmentStats(
+            compartment=c["compartment"],
+            n_synapses=c["n_synapses"],
+            fraction=c["fraction"],
+        )
+        for c in raw.get("compartments", [])
+    ]
+
+    return SynapseCompartmentResponse(
+        neuron_id=raw["neuron_id"],
+        dataset=dataset,
+        direction=raw.get("direction", "input"),
+        compartments=compartments,
+        n_total_synapses=raw.get("n_total_synapses", 0),
         warnings=raw.get("warnings", []),
     )

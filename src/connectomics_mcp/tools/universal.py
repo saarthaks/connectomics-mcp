@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from connectomics_mcp.exceptions import StaleRootIdError
+from connectomics_mcp.exceptions import DatasetNotSupported, StaleRootIdError
 from connectomics_mcp.neuroglancer.url_builder import (
     NEUROGLANCER_CONFIGS,
     build_neuroglancer_url as _build_ngl_url,
@@ -23,7 +23,9 @@ from connectomics_mcp.registry import DATASETS, check_capability, get_backend
 logger = logging.getLogger(__name__)
 
 
-def get_neuron_info(neuron_id: int | str, dataset: str) -> dict[str, Any]:
+def get_neuron_info(
+    neuron_id: int | str, dataset: str, nucleus_id: int | None = None
+) -> dict[str, Any]:
     """Get basic information about a neuron.
 
     Returns cell type, soma position, synapse counts, and a
@@ -38,6 +40,9 @@ def get_neuron_info(neuron_id: int | str, dataset: str) -> dict[str, Any]:
     dataset : str
         Dataset to query. Supported: "minnie65", "flywire",
         "fanc", "hemibrain".
+    nucleus_id : int, optional
+        MICrONS nucleus ID (minnie65 only). If provided, resolves
+        to the current pt_root_id before querying.
 
     Returns
     -------
@@ -53,8 +58,47 @@ def get_neuron_info(neuron_id: int | str, dataset: str) -> dict[str, Any]:
         If the dataset is unknown or does not support universal tools.
     StaleRootIdError
         If the root ID is outdated (CAVE datasets only).
+    ValueError
+        If nucleus_id is provided but has no associated segment.
     """
     check_capability(dataset, "universal")
+
+    nucleus_warnings: list[str] = []
+
+    # Resolve nucleus ID to pt_root_id (MICrONS only)
+    if nucleus_id is not None:
+        if dataset != "minnie65":
+            raise DatasetNotSupported(
+                dataset,
+                "nucleus_resolution (nucleus IDs are MICrONS-specific)",
+            )
+
+        backend = get_backend(dataset)
+        resolution_raw = backend.resolve_nucleus_ids([nucleus_id])
+        resolutions = resolution_raw.get("resolutions", [])
+
+        if not resolutions:
+            raise ValueError(
+                f"Nucleus ID {nucleus_id} could not be resolved in {dataset}."
+            )
+
+        res = resolutions[0]
+        status = res["resolution_status"]
+
+        if status == "no_segment":
+            raise ValueError(
+                f"Nucleus ID {nucleus_id} has no associated segment in "
+                f"{dataset}. The cell may be in an under-segmented region."
+            )
+        elif status == "merge_conflict":
+            conflicting = res.get("conflicting_nucleus_ids", [])
+            nucleus_warnings.append(
+                f"Nucleus {nucleus_id} shares pt_root_id {res['pt_root_id']} "
+                f"with nuclei {conflicting}. This segment likely contains a "
+                f"merge error."
+            )
+
+        neuron_id = res["pt_root_id"]
 
     backend = get_backend(dataset)
     raw = backend.get_neuron_info(neuron_id)
@@ -62,6 +106,10 @@ def get_neuron_info(neuron_id: int | str, dataset: str) -> dict[str, Any]:
     # CAVE datasets: raise if the root ID is stale
     if DATASETS[dataset]["backend"] == "cave" and not raw.get("is_current", True):
         raise StaleRootIdError(int(neuron_id))
+
+    # Append nucleus resolution warnings
+    if nucleus_warnings:
+        raw.setdefault("warnings", []).extend(nucleus_warnings)
 
     response = format_neuron_info(raw, dataset)
     return response.model_dump()

@@ -117,3 +117,76 @@ class ConnectomeBackend(ABC):
         dict
             Raw proofreading status for the formatter.
         """
+
+    @abstractmethod
+    def query_annotation_table(
+        self,
+        table_name: str,
+        filter_equal_dict: dict[str, Any] | None = None,
+        filter_in_dict: dict[str, list] | None = None,
+    ) -> dict[str, Any]:
+        """Query an annotation table.
+
+        Parameters
+        ----------
+        table_name : str
+            Name of the annotation table to query.
+        filter_equal_dict : dict, optional
+            Equality filters passed to the query.
+        filter_in_dict : dict, optional
+            Membership filters passed to the query.
+
+        Returns
+        -------
+        dict
+            Raw annotation table dict with ``table_df`` key for the formatter.
+        """
+
+    @abstractmethod
+    def get_edit_history(self, neuron_id: int) -> dict[str, Any]:
+        """Fetch edit history for a neuron.
+
+        Parameters
+        ----------
+        neuron_id : int
+            Root ID of the neuron.
+
+        Returns
+        -------
+        dict
+            Raw edit history dict with ``edits_df`` key for the formatter.
+        """
+
+    @abstractmethod
+    def fetch_cypher(self, query: str) -> dict[str, Any]:
+        """Execute a Cypher query against the backend.
+
+        Parameters
+        ----------
+        query : str
+            Cypher query string.
+
+        Returns
+        -------
+        dict
+            Raw query result dict with ``result_df`` key for the formatter.
+        """
+
+    @abstractmethod
+    def get_synapse_compartments(
+        self, neuron_id: int | str, direction: str = "input"
+    ) -> dict[str, Any]:
+        """Fetch synapse distribution across compartments/ROIs.
+
+        Parameters
+        ----------
+        neuron_id : int | str
+            Body ID of the neuron.
+        direction : str
+            "input" for post-synaptic or "output" for pre-synaptic.
+
+        Returns
+        -------
+        dict
+            Raw compartment stats for the formatter.
+        """
