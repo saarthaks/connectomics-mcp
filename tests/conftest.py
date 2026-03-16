@@ -439,6 +439,213 @@ class MockCAVEBackend(ConnectomeBackend):
             "edits_df": _make_cave_edit_history_df(),
         }
 
+    # -- MICrONS-specific table mocks --------------------------------------
+
+    def query_coregistration(
+        self, neuron_id: int, by: str = "root_id"
+    ) -> dict[str, Any]:
+        warnings: list[str] = []
+        if by == "root_id" and not self.is_current:
+            warnings.append(
+                f"Root ID {neuron_id} is outdated. "
+                f"Use `validate_root_ids()` to get current IDs."
+            )
+        rows = [
+            {"target_id": 264824, "session": 4, "scan_idx": 7, "unit_id": 123,
+             "field": 1, "residual": 2.5, "score": 8.3, "pt_root_id": 864691135571546917},
+            {"target_id": 264824, "session": 4, "scan_idx": 7, "unit_id": 456,
+             "field": 2, "residual": 3.1, "score": 6.7, "pt_root_id": 864691135571546917},
+            {"target_id": 264824, "session": 9, "scan_idx": 3, "unit_id": 789,
+             "field": 1, "residual": 1.8, "score": 9.1, "pt_root_id": 864691135571546917},
+        ]
+        return {
+            "dataset": "minnie65",
+            "table_name": "coregistration_auto_phase3_fwd_apl_vess_combined_v2",
+            "materialization_version": 943,
+            "warnings": warnings,
+            "table_df": pd.DataFrame(rows),
+            "neuron_id": neuron_id,
+            "by": by,
+            "is_current": self.is_current if by == "root_id" else True,
+        }
+
+    def query_functional_properties(
+        self, neuron_id: int, by: str = "root_id",
+        coregistration_source: str = "coreg_v4",
+    ) -> dict[str, Any]:
+        warnings: list[str] = []
+        if by == "root_id" and not self.is_current:
+            warnings.append(
+                f"Root ID {neuron_id} is outdated. "
+                f"Use `validate_root_ids()` to get current IDs."
+            )
+        table_map = {
+            "coreg_v4": "digital_twin_properties_bcm_coreg_v4",
+            "auto_phase3": "digital_twin_properties_bcm_coreg_auto_phase3_fwd_v2",
+            "apl_vess": "digital_twin_properties_bcm_coreg_apl_vess_fwd",
+        }
+        rows = [
+            {"id": 264824, "cc_abs": 0.45, "cc_max": 0.68, "cc_norm": 0.66,
+             "OSI": 0.72, "DSI": 0.31, "gOSI": 0.65, "gDSI": 0.28,
+             "pref_ori": 45.0, "pref_dir": 90.0,
+             "readout_loc_x": 12.3, "readout_loc_y": -5.7,
+             "pt_root_id": 864691135571546917},
+            {"id": 264824, "cc_abs": 0.52, "cc_max": 0.71, "cc_norm": 0.73,
+             "OSI": 0.81, "DSI": 0.45, "gOSI": 0.74, "gDSI": 0.40,
+             "pref_ori": 48.0, "pref_dir": 95.0,
+             "readout_loc_x": 11.8, "readout_loc_y": -6.1,
+             "pt_root_id": 864691135571546917},
+        ]
+        return {
+            "dataset": "minnie65",
+            "table_name": table_map[coregistration_source],
+            "materialization_version": 943,
+            "warnings": warnings,
+            "table_df": pd.DataFrame(rows),
+            "neuron_id": neuron_id,
+            "by": by,
+            "coregistration_source": coregistration_source,
+            "is_current": self.is_current if by == "root_id" else True,
+        }
+
+    def query_synapse_targets(
+        self, root_id: int, direction: str = "post"
+    ) -> dict[str, Any]:
+        warnings: list[str] = []
+        if not self.is_current:
+            warnings.append(
+                f"Root ID {root_id} is outdated. "
+                f"Use `validate_root_ids()` to get current IDs."
+            )
+        rows = [
+            {"pre_pt_root_id": 864691135000001, "post_pt_root_id": root_id, "size": 120, "tag": "spine"},
+            {"pre_pt_root_id": 864691135000002, "post_pt_root_id": root_id, "size": 85, "tag": "spine"},
+            {"pre_pt_root_id": 864691135000003, "post_pt_root_id": root_id, "size": 95, "tag": "shaft"},
+            {"pre_pt_root_id": 864691135000004, "post_pt_root_id": root_id, "size": 200, "tag": "soma"},
+            {"pre_pt_root_id": 864691135000005, "post_pt_root_id": root_id, "size": 110, "tag": "spine"},
+            {"pre_pt_root_id": 864691135000006, "post_pt_root_id": root_id, "size": 70, "tag": "shaft"},
+        ]
+        return {
+            "dataset": "minnie65",
+            "table_name": "synapse_target_predictions_ssa_v2",
+            "materialization_version": 943,
+            "warnings": warnings,
+            "table_df": pd.DataFrame(rows),
+            "neuron_id": root_id,
+            "direction": direction,
+            "is_current": self.is_current,
+        }
+
+    def query_multi_input_spines(
+        self, root_id: int, direction: str = "post"
+    ) -> dict[str, Any]:
+        warnings: list[str] = [
+            "This table is deprecated. Prefer get_synapse_targets for general use."
+        ]
+        if not self.is_current:
+            warnings.append(
+                f"Root ID {root_id} is outdated. "
+                f"Use `validate_root_ids()` to get current IDs."
+            )
+        rows = [
+            {"pre_pt_root_id": 864691135000001, "post_pt_root_id": root_id, "size": 120, "tag": "spine", "group_id": 1},
+            {"pre_pt_root_id": 864691135000002, "post_pt_root_id": root_id, "size": 85, "tag": "spine", "group_id": 1},
+            {"pre_pt_root_id": 864691135000003, "post_pt_root_id": root_id, "size": 95, "tag": "spine", "group_id": 2},
+            {"pre_pt_root_id": 864691135000004, "post_pt_root_id": root_id, "size": 110, "tag": "spine", "group_id": 2},
+            {"pre_pt_root_id": 864691135000005, "post_pt_root_id": root_id, "size": 70, "tag": "spine", "group_id": 2},
+        ]
+        return {
+            "dataset": "minnie65",
+            "table_name": "multi_input_spine_predictions_ssa",
+            "materialization_version": 943,
+            "warnings": warnings,
+            "table_df": pd.DataFrame(rows),
+            "neuron_id": root_id,
+            "direction": direction,
+            "is_current": self.is_current,
+        }
+
+    def query_cell_mtypes(
+        self, neuron_id: int | None = None, by: str = "root_id",
+        cell_type: str | None = None,
+    ) -> dict[str, Any]:
+        warnings: list[str] = []
+        if neuron_id is not None and by == "root_id" and not self.is_current:
+            warnings.append(
+                f"Root ID {neuron_id} is outdated. "
+                f"Use `validate_root_ids()` to get current IDs."
+            )
+        rows = [
+            {"id": 264824, "pt_root_id": 864691135571546917, "classification_system": "excitatory", "cell_type": "L2a"},
+            {"id": 264825, "pt_root_id": 864691135000200, "classification_system": "excitatory", "cell_type": "L3b"},
+            {"id": 264826, "pt_root_id": 864691135000201, "classification_system": "inhibitory", "cell_type": "DTC"},
+            {"id": 264827, "pt_root_id": 864691135000202, "classification_system": "excitatory", "cell_type": "L2a"},
+            {"id": 264828, "pt_root_id": 864691135000203, "classification_system": "inhibitory", "cell_type": "PTC"},
+        ]
+        df = pd.DataFrame(rows)
+        if neuron_id is not None:
+            if by == "root_id":
+                df = df[df["pt_root_id"] == neuron_id]
+            else:
+                df = df[df["id"] == neuron_id]
+        if cell_type is not None:
+            df = df[df["cell_type"] == cell_type]
+        return {
+            "dataset": "minnie65",
+            "table_name": "aibs_metamodel_mtypes_v661_v2",
+            "materialization_version": 943,
+            "warnings": warnings,
+            "table_df": df.reset_index(drop=True),
+            "neuron_id": neuron_id,
+            "by": by,
+            "cell_type": cell_type,
+            "is_current": (
+                self.is_current
+                if (neuron_id is not None and by == "root_id")
+                else True
+            ),
+        }
+
+    def query_functional_area(
+        self, neuron_id: int | None = None, by: str = "root_id",
+        area: str | None = None,
+    ) -> dict[str, Any]:
+        warnings: list[str] = []
+        if neuron_id is not None and by == "root_id" and not self.is_current:
+            warnings.append(
+                f"Root ID {neuron_id} is outdated. "
+                f"Use `validate_root_ids()` to get current IDs."
+            )
+        rows = [
+            {"target_id": 264824, "pt_root_id": 864691135571546917, "tag": "V1", "value": 15.3},
+            {"target_id": 264825, "pt_root_id": 864691135000200, "tag": "AL", "value": 8.7},
+            {"target_id": 264826, "pt_root_id": 864691135000201, "tag": "V1", "value": 22.1},
+            {"target_id": 264827, "pt_root_id": 864691135000202, "tag": "LM", "value": 5.2},
+        ]
+        df = pd.DataFrame(rows)
+        if neuron_id is not None:
+            if by == "root_id":
+                df = df[df["pt_root_id"] == neuron_id]
+            else:
+                df = df[df["target_id"] == neuron_id]
+        if area is not None:
+            df = df[df["tag"] == area]
+        return {
+            "dataset": "minnie65",
+            "table_name": "nucleus_functional_area_assignment",
+            "materialization_version": 943,
+            "warnings": warnings,
+            "table_df": df.reset_index(drop=True),
+            "neuron_id": neuron_id,
+            "by": by,
+            "area": area,
+            "is_current": (
+                self.is_current
+                if (neuron_id is not None and by == "root_id")
+                else True
+            ),
+        }
+
     def fetch_cypher(self, query: str) -> dict[str, Any]:
         from connectomics_mcp.exceptions import DatasetNotSupported
 
@@ -462,6 +669,49 @@ class MockCAVEBackend(ConnectomeBackend):
             "materialization_version": 943,
             "warnings": [],
             "region_df": region_df,
+        }
+
+    def get_cell_type_taxonomy(self) -> dict[str, Any]:
+        return {
+            "dataset": "minnie65",
+            "n_total_neurons": 30,
+            "levels": [
+                {"level_name": "cell_type", "values": [
+                    {"name": "L2/3 IT", "n_neurons": 10},
+                    {"name": "L4 IT", "n_neurons": 8},
+                    {"name": "L5 PT", "n_neurons": 5},
+                    {"name": "L6 CT", "n_neurons": 4},
+                    {"name": "Pvalb", "n_neurons": 2},
+                    {"name": "Sst", "n_neurons": 1},
+                ]},
+            ],
+            "example_lineages": [],
+            "warnings": [],
+        }
+
+    def search_cell_types(self, query: str) -> dict[str, Any]:
+        all_types = ["L2/3 IT", "L4 IT", "L5 PT", "L6 CT", "Pvalb", "Sst"]
+        q = query.lower()
+        matches = []
+        for ct in all_types:
+            if q in ct.lower():
+                matches.append({
+                    "cell_type": ct,
+                    "classification_level": "cell_type",
+                    "n_neurons": 5,
+                })
+        taxonomy_hints: list[str] = []
+        if not matches:
+            taxonomy_hints.append(
+                f"No matches for '{query}' in minnie65. "
+                f"Use get_cell_type_taxonomy() to see available types."
+            )
+        return {
+            "dataset": "minnie65",
+            "query": query,
+            "matches": matches,
+            "taxonomy_hints": taxonomy_hints,
+            "warnings": [],
         }
 
     def get_neurons_by_type(
@@ -517,7 +767,7 @@ def _make_flywire_connectivity_df() -> pd.DataFrame:
 class MockFlyWireBackend(MockCAVEBackend):
     """Mock FlyWire backend with hierarchy and NT enrichment."""
 
-    # Mock hierarchy data
+    # Mock hierarchy data — includes central complex types for head direction circuit
     HIERARCHY_DATA: dict[int, dict] = {
         720575940621039145: {
             "super_class": "central",
@@ -537,11 +787,119 @@ class MockFlyWireBackend(MockCAVEBackend):
             "cell_sub_class": "uPN",
             "cell_type": "DA1_lPN",
         },
+        # Central complex compass/ring neurons
+        720575940600001000: {
+            "super_class": "central",
+            "cell_class": "central_complex",
+            "cell_sub_class": "compass",
+            "cell_type": "EPG",
+        },
+        720575940600001001: {
+            "super_class": "central",
+            "cell_class": "central_complex",
+            "cell_sub_class": "compass",
+            "cell_type": "EPG",
+        },
+        720575940600001002: {
+            "super_class": "central",
+            "cell_class": "central_complex",
+            "cell_sub_class": "compass",
+            "cell_type": "PEN_a",
+        },
+        720575940600001003: {
+            "super_class": "central",
+            "cell_class": "central_complex",
+            "cell_sub_class": "compass",
+            "cell_type": "PEN_b",
+        },
+        720575940600001004: {
+            "super_class": "central",
+            "cell_class": "central_complex",
+            "cell_sub_class": "ring",
+            "cell_type": "Delta7",
+        },
+        720575940600001005: {
+            "super_class": "central",
+            "cell_class": "central_complex",
+            "cell_sub_class": "ring",
+            "cell_type": "Delta7",
+        },
     }
+
+    # Flat hierarchy table rows for search — mirrors _get_hierarchy_df() format
+    @classmethod
+    def _make_hierarchy_df(cls) -> pd.DataFrame:
+        rows = []
+        for rid, hier in cls.HIERARCHY_DATA.items():
+            for level in ["super_class", "cell_class", "cell_sub_class", "cell_type"]:
+                if level in hier:
+                    rows.append({
+                        "pt_root_id": rid,
+                        "classification_system": level,
+                        "cell_type": hier[level],
+                    })
+        return pd.DataFrame(rows)
 
     def __init__(self, is_current: bool = True) -> None:
         super().__init__(is_current=is_current)
         self.dataset_name = "flywire"
+
+    # Tag-level annotations (neuron_information_v2.tag) — specific cell type names
+    TAG_DATA: dict[str, int] = {
+        "DA1_lPN": 3,
+        "EPG": 2,
+        "PEN_a": 1,
+        "PEN_b": 1,
+        "Delta7": 2,
+    }
+
+    def get_cell_type_taxonomy(self) -> dict[str, Any]:
+        hier_df = self._make_hierarchy_df()
+        levels = []
+        for level in ["super_class", "cell_class", "cell_sub_class", "cell_type"]:
+            level_df = hier_df[hier_df["classification_system"] == level]
+            if level_df.empty:
+                continue
+            counts = (
+                level_df.groupby("cell_type")["pt_root_id"]
+                .nunique()
+                .sort_values(ascending=False)
+            )
+            values = [
+                {"name": str(ct), "n_neurons": int(n)}
+                for ct, n in counts.items()
+            ]
+            levels.append({"level_name": level, "values": values})
+
+        # Include tag-level types from neuron_information_v2
+        tag_values = [
+            {"name": name, "n_neurons": count}
+            for name, count in sorted(
+                self.TAG_DATA.items(), key=lambda x: -x[1]
+            )
+        ]
+        levels.append({"level_name": "tag", "values": tag_values})
+
+        # Example lineages
+        example_lineages = []
+        class_df = hier_df[hier_df["classification_system"] == "cell_class"]
+        if not class_df.empty:
+            sample = class_df.groupby("cell_type")["pt_root_id"].first().head(5)
+            for _, rid in sample.items():
+                lineage = {}
+                rows = hier_df[hier_df["pt_root_id"] == rid]
+                for _, row in rows.iterrows():
+                    lineage[str(row["classification_system"])] = str(row["cell_type"])
+                if lineage:
+                    example_lineages.append(lineage)
+
+        return {
+            "dataset": "flywire",
+            "n_total_neurons": hier_df["pt_root_id"].nunique(),
+            "levels": levels,
+            "example_lineages": example_lineages,
+            "warnings": [],
+        }
 
     def get_neuron_info(self, neuron_id: int | str) -> dict[str, Any]:
         root_id = int(neuron_id)
@@ -598,32 +956,177 @@ class MockFlyWireBackend(MockCAVEBackend):
             "partners_df": df,
         }
 
+    def search_cell_types(self, query: str) -> dict[str, Any]:
+        hier_df = self._make_hierarchy_df()
+        q = query.lower()
+
+        # Search hierarchy levels
+        mask = hier_df["cell_type"].astype(str).str.lower().str.contains(
+            q, na=False, regex=False,
+        )
+        matched = hier_df[mask]
+
+        matches = []
+        if not matched.empty:
+            grouped = matched.groupby(
+                ["classification_system", "cell_type"]
+            )["pt_root_id"].nunique().reset_index()
+            grouped.columns = ["classification_level", "cell_type", "n_neurons"]
+            grouped = grouped.sort_values("n_neurons", ascending=False)
+            for _, row in grouped.iterrows():
+                matches.append({
+                    "cell_type": str(row["cell_type"]),
+                    "classification_level": str(row["classification_level"]),
+                    "n_neurons": int(row["n_neurons"]),
+                })
+
+        # Also search tag-level types (neuron_information_v2)
+        for tag_name, tag_count in self.TAG_DATA.items():
+            if q in tag_name.lower():
+                matches.append({
+                    "cell_type": tag_name,
+                    "classification_level": "tag",
+                    "n_neurons": tag_count,
+                })
+
+        # Sort: tag first (most specific), then cell_type, etc.
+        level_order = {"tag": 4, "cell_type": 3, "cell_sub_class": 2, "cell_class": 1, "super_class": 0}
+        matches.sort(
+            key=lambda m: (-level_order.get(m["classification_level"], -1), -m["n_neurons"]),
+        )
+
+        taxonomy_hints: list[str] = []
+        if not matches:
+            class_df = hier_df[hier_df["classification_system"] == "cell_class"]
+            if not class_df.empty:
+                class_counts = (
+                    class_df.groupby("cell_type")["pt_root_id"]
+                    .nunique()
+                    .sort_values(ascending=False)
+                )
+                class_strs = [f"{ct} ({n})" for ct, n in class_counts.items()]
+                taxonomy_hints.append(
+                    f"No matches for '{query}'. FlyWire uses a 4-level "
+                    f"hierarchy. Available cell_class categories: "
+                    f"{', '.join(class_strs)}. Try searching within a "
+                    f"relevant category, or use get_cell_type_taxonomy()."
+                )
+
+        return {
+            "dataset": "flywire",
+            "query": query,
+            "matches": matches,
+            "taxonomy_hints": taxonomy_hints,
+            "warnings": [],
+        }
+
     def get_neurons_by_type(
         self, cell_type: str, region: str | None = None
     ) -> dict[str, Any]:
-        # Build neurons from hierarchy data
+        """Progressive matching: exact cell_type → exact any level → case-insensitive → substring."""
+        warnings: list[str] = []
+        hier_df = self._make_hierarchy_df()
+
+        # 1. Exact match on cell_type level
+        matches = hier_df[
+            (hier_df["classification_system"] == "cell_type")
+            & (hier_df["cell_type"] == cell_type)
+        ]
+
+        # 2. Exact match on any level
+        if matches.empty:
+            matches = hier_df[hier_df["cell_type"] == cell_type]
+            if not matches.empty:
+                levels = matches["classification_system"].unique().tolist()
+                warnings.append(
+                    f"'{cell_type}' not found at cell_type level but matched at: {', '.join(levels)}"
+                )
+
+        # 3. Case-insensitive exact match
+        if matches.empty:
+            ct_lower = cell_type.lower()
+            mask_ci = hier_df["cell_type"].astype(str).str.lower() == ct_lower
+            matches = hier_df[mask_ci]
+            if not matches.empty:
+                actual = matches["cell_type"].unique().tolist()
+                warnings.append(
+                    f"'{cell_type}' matched case-insensitively as: {', '.join(str(n) for n in actual)}"
+                )
+
+        # 4. Substring match
+        if matches.empty:
+            ct_lower = cell_type.lower()
+            mask_sub = hier_df["cell_type"].astype(str).str.lower().str.contains(
+                ct_lower, na=False, regex=False,
+            )
+            matches = hier_df[mask_sub]
+            if not matches.empty:
+                found = matches.groupby(
+                    ["classification_system", "cell_type"]
+                )["pt_root_id"].nunique().reset_index()
+                found.columns = ["level", "name", "count"]
+                found = found.sort_values("count", ascending=False).head(10)
+                suggestions = [
+                    f"{r['name']} ({r['level']}, {r['count']} neurons)"
+                    for _, r in found.iterrows()
+                ]
+                warnings.append(
+                    f"'{cell_type}' matched via substring search. "
+                    f"Matching types: {'; '.join(suggestions)}. "
+                    f"Use search_cell_types() for broader discovery."
+                )
+
+        if matches.empty:
+            warnings.append(
+                f"No neurons found matching '{cell_type}' in FlyWire. "
+                f"Use search_cell_types('{cell_type}', dataset='flywire') "
+                f"to discover available names."
+            )
+            return {
+                "dataset": "flywire",
+                "query_cell_type": cell_type,
+                "query_region": region,
+                "materialization_version": 783,
+                "warnings": warnings,
+                "neurons_df": pd.DataFrame(
+                    columns=["neuron_id", "cell_type", "cell_class",
+                             "region", "n_pre_synapses", "n_post_synapses",
+                             "proofread"]
+                ),
+            }
+
+        # Deduplicate by pt_root_id
+        unique_rids = matches["pt_root_id"].unique()
         rows = []
-        for rid, hierarchy in self.HIERARCHY_DATA.items():
-            if hierarchy.get("cell_type") == cell_type:
-                rows.append({
-                    "neuron_id": rid,
-                    "cell_type": cell_type,
-                    "cell_class": hierarchy.get("cell_class"),
-                    "region": hierarchy.get("super_class"),
-                    "n_pre_synapses": None,
-                    "n_post_synapses": None,
-                    "proofread": None,
-                })
+        for rid in unique_rids:
+            hierarchy = self.HIERARCHY_DATA.get(rid, {})
+            reported_type = cell_type
+            if hierarchy:
+                for level in reversed(["super_class", "cell_class", "cell_sub_class", "cell_type"]):
+                    if level in hierarchy:
+                        reported_type = hierarchy[level]
+                        break
+            rows.append({
+                "neuron_id": rid,
+                "cell_type": reported_type,
+                "cell_class": hierarchy.get("cell_class"),
+                "region": hierarchy.get("super_class"),
+                "n_pre_synapses": None,
+                "n_post_synapses": None,
+                "proofread": None,
+            })
+
         neurons_df = pd.DataFrame(rows)
         if region and not neurons_df.empty:
             mask = neurons_df["region"].str.contains(region, case=False, na=False)
             neurons_df = neurons_df[mask].reset_index(drop=True)
+
         return {
             "dataset": "flywire",
             "query_cell_type": cell_type,
             "query_region": region,
             "materialization_version": 783,
-            "warnings": [],
+            "warnings": warnings,
             "neurons_df": neurons_df,
         }
 
@@ -682,6 +1185,24 @@ class MockNeuPrintBackend(ConnectomeBackend):
 
     def __init__(self) -> None:
         self.dataset_name = "hemibrain"
+
+    def get_cell_type_taxonomy(self) -> dict[str, Any]:
+        all_types = [
+            ("KC-ab", 100), ("KC-ab(m)", 50), ("MBON14", 12),
+            ("DAN-d1", 8), ("EPG", 20), ("PEN_a", 16), ("PEN_b", 16),
+            ("Delta7", 10), ("PEG", 8),
+        ]
+        return {
+            "dataset": "hemibrain",
+            "n_total_neurons": sum(n for _, n in all_types),
+            "levels": [
+                {"level_name": "type", "values": [
+                    {"name": ct, "n_neurons": n} for ct, n in all_types
+                ]},
+            ],
+            "example_lineages": [],
+            "warnings": [],
+        }
 
     def get_neuron_info(self, neuron_id: int | str) -> dict[str, Any]:
         body_id = int(neuron_id)
@@ -785,6 +1306,28 @@ class MockNeuPrintBackend(ConnectomeBackend):
             "materialization_version": None,
             "warnings": [],
             "region_df": region_df,
+        }
+
+    def search_cell_types(self, query: str) -> dict[str, Any]:
+        all_types = [
+            ("KC-ab", 100), ("KC-ab(m)", 50), ("MBON14", 12),
+            ("DAN-d1", 8), ("EPG", 20), ("PEN_a", 16), ("PEN_b", 16),
+            ("Delta7", 10), ("PEG", 8),
+        ]
+        q = query.lower()
+        matches = []
+        for ct, count in all_types:
+            if q in ct.lower():
+                matches.append({
+                    "cell_type": ct,
+                    "classification_level": "type",
+                    "n_neurons": count,
+                })
+        return {
+            "dataset": "hemibrain",
+            "query": query,
+            "matches": matches,
+            "warnings": [],
         }
 
     def get_neurons_by_type(

@@ -197,6 +197,70 @@ def build_neuroglancer_url(
 
 
 @mcp.tool()
+def get_cell_type_taxonomy(dataset: str) -> dict:
+    """Get the cell type taxonomy/hierarchy for a dataset.
+
+    Returns the full classification structure showing how cell types
+    are organized. Use this FIRST when working with an unfamiliar
+    dataset to understand its naming conventions before searching
+    for specific cell types.
+
+    For FlyWire, the hierarchy has 4 levels:
+      super_class → cell_class → cell_sub_class → cell_type
+    For hemibrain, types are a flat namespace.
+    For MICrONS, cell types are a flat list.
+
+    The response includes example lineages showing the full path
+    from broadest to finest level for representative neurons.
+
+    Parameters
+    ----------
+    dataset : str
+        Dataset to query. Supported: "minnie65", "flywire",
+        "hemibrain".
+
+    Returns
+    -------
+    dict
+        CellTypeTaxonomyResponse with levels (each with top values
+        and neuron counts), example_lineages, and n_total_neurons.
+    """
+    return universal.get_cell_type_taxonomy(dataset)
+
+
+@mcp.tool()
+def search_cell_types(query: str, dataset: str) -> dict:
+    """Search for cell types matching a query string.
+
+    Performs case-insensitive substring matching across all available
+    annotation levels. Use this tool FIRST to discover what cell type
+    names exist in a dataset before calling ``get_neurons_by_type``.
+
+    For FlyWire, searches across all hierarchy levels (super_class,
+    cell_class, cell_sub_class, cell_type). For hemibrain, searches
+    neuron type annotations. For MICrONS, searches the cell type table.
+
+    Examples: search for "EPG" to find EPG neurons, "ring" to find
+    ring neurons, "compass" or "head_direction" for compass/HD neurons.
+
+    Parameters
+    ----------
+    query : str
+        Search string — case-insensitive substring match.
+    dataset : str
+        Dataset to search. Supported: "minnie65", "flywire",
+        "hemibrain".
+
+    Returns
+    -------
+    dict
+        CellTypeSearchResponse with matches (cell_type name,
+        classification_level, n_neurons) sorted by relevance.
+    """
+    return universal.search_cell_types(query, dataset)
+
+
+@mcp.tool()
 def get_neurons_by_type(
     cell_type: str, dataset: str, region: str | None = None
 ) -> dict:
@@ -206,11 +270,19 @@ def get_neurons_by_type(
     neuron list is saved as a Parquet artifact — load it with
     ``pd.read_parquet(artifact_path)`` for full analysis.
 
+    For FlyWire, uses progressive matching: exact match at cell_type
+    level → exact at any hierarchy level → case-insensitive →
+    substring. If no match is found, the response suggests using
+    ``search_cell_types()`` for discovery.
+
+    Tip: if you're unsure of the exact cell type name, call
+    ``search_cell_types()`` first to discover available names.
+
     Parameters
     ----------
     cell_type : str
         Cell type annotation to search for (e.g. "L2/3 IT",
-        "MBON14", "KC-ab").
+        "MBON14", "KC-ab", "EPG").
     dataset : str
         Dataset to query. Supported: "minnie65", "flywire",
         "hemibrain".
@@ -383,6 +455,207 @@ def get_synapse_compartments(
     return neuprint_specific.get_synapse_compartments(
         neuron_id, dataset, direction
     )
+
+
+@mcp.tool()
+def get_coregistration(
+    neuron_id: int, dataset: str, by: str = "root_id"
+) -> dict:
+    """Get EM-to-functional imaging coregistration for a neuron.
+
+    Maps EM neurons to 2-photon functional imaging units (session,
+    scan, unit). Complete results saved as Parquet artifact — load
+    with ``pd.read_parquet(artifact_path)``.
+
+    Only available for MICrONS (minnie65).
+
+    Parameters
+    ----------
+    neuron_id : int
+        Root ID or nucleus ID.
+    dataset : str
+        Must be "minnie65".
+    by : str
+        "root_id" or "nucleus_id" (default "root_id").
+
+    Returns
+    -------
+    dict
+        CoregistrationResponse with artifact_manifest, n_units,
+        score_distribution, and sessions list.
+    """
+    return cave_specific.get_coregistration(neuron_id, dataset, by)
+
+
+@mcp.tool()
+def get_functional_properties(
+    neuron_id: int,
+    dataset: str,
+    by: str = "root_id",
+    coregistration_source: str = "auto_phase3",
+) -> dict:
+    """Get digital twin functional properties for a neuron.
+
+    Returns orientation/direction selectivity, receptive field
+    centers, and model performance metrics. Complete results saved
+    as Parquet artifact.
+
+    Only available for MICrONS (minnie65).
+
+    Parameters
+    ----------
+    neuron_id : int
+        Root ID or nucleus ID.
+    dataset : str
+        Must be "minnie65".
+    by : str
+        "root_id" or "nucleus_id" (default "root_id").
+    coregistration_source : str
+        Table variant: "auto_phase3" (default, largest coverage),
+        "coreg_v4" (manual), or "apl_vess".
+
+    Returns
+    -------
+    dict
+        FunctionalPropertiesResponse with artifact_manifest,
+        ori_selectivity_distribution, dir_selectivity_distribution.
+    """
+    return cave_specific.get_functional_properties(
+        neuron_id, dataset, by, coregistration_source
+    )
+
+
+@mcp.tool()
+def get_synapse_targets(
+    root_id: int, dataset: str, direction: str = "post"
+) -> dict:
+    """Get per-synapse structural target predictions for a neuron.
+
+    Classifies each synapse as targeting spine, shaft, or soma.
+    Complete results saved as Parquet artifact.
+
+    Only available for MICrONS (minnie65).
+
+    Parameters
+    ----------
+    root_id : int
+        Root ID of the neuron.
+    dataset : str
+        Must be "minnie65".
+    direction : str
+        "post" for synapses onto this neuron (default),
+        "pre" for synapses from this neuron.
+
+    Returns
+    -------
+    dict
+        SynapseTargetsResponse with artifact_manifest, n_synapses,
+        target_distribution (spine/shaft/soma counts).
+    """
+    return cave_specific.get_synapse_targets(root_id, dataset, direction)
+
+
+@mcp.tool()
+def get_multi_input_spines(
+    root_id: int, dataset: str, direction: str = "post"
+) -> dict:
+    """Get multi-input spine predictions for a neuron (deprecated).
+
+    Deprecated: prefer ``get_synapse_targets`` for general use.
+    Identifies spines receiving >1 input synapse, grouped by
+    shared postsynaptic compartment. Complete results saved as
+    Parquet artifact.
+
+    Only available for MICrONS (minnie65).
+
+    Parameters
+    ----------
+    root_id : int
+        Root ID of the neuron.
+    dataset : str
+        Must be "minnie65".
+    direction : str
+        "post" for spines on this neuron (default),
+        "pre" for spines from this neuron.
+
+    Returns
+    -------
+    dict
+        MultiInputSpinesResponse with artifact_manifest, n_synapses,
+        n_spine_groups, target_distribution.
+    """
+    return cave_specific.get_multi_input_spines(root_id, dataset, direction)
+
+
+@mcp.tool()
+def get_cell_mtypes(
+    dataset: str,
+    neuron_id: int | None = None,
+    by: str = "root_id",
+    cell_type: str | None = None,
+) -> dict:
+    """Get morphological cell type (mtype) classifications.
+
+    24 types based on dendritic features and connectivity motifs.
+    Excitatory: L2a-L6wm. Inhibitory: PTC, DTC, STC, ITC.
+    Complete results saved as Parquet artifact.
+
+    Only available for MICrONS (minnie65).
+
+    Parameters
+    ----------
+    dataset : str
+        Must be "minnie65".
+    neuron_id : int, optional
+        Root ID or nucleus ID for single-neuron lookup.
+    by : str
+        "root_id" or "nucleus_id" (default "root_id").
+    cell_type : str, optional
+        Filter by mtype (e.g. "L2a", "DTC").
+
+    Returns
+    -------
+    dict
+        CellMtypesResponse with artifact_manifest, n_total,
+        classification_system_distribution, cell_type_distribution.
+    """
+    return cave_specific.get_cell_mtypes(dataset, neuron_id, by, cell_type)
+
+
+@mcp.tool()
+def get_functional_area(
+    dataset: str,
+    neuron_id: int | None = None,
+    by: str = "root_id",
+    area: str | None = None,
+) -> dict:
+    """Get functional brain area assignments for MICrONS neurons.
+
+    Areas: V1, AL, RL, LM — inferred from 2-photon imaging
+    boundaries. The ``value`` column is distance to nearest area
+    boundary in micrometers (higher = more confident). Complete
+    results saved as Parquet artifact.
+
+    Only available for MICrONS (minnie65).
+
+    Parameters
+    ----------
+    dataset : str
+        Must be "minnie65".
+    neuron_id : int, optional
+        Root ID or nucleus ID for single-neuron lookup.
+    by : str
+        "root_id" or "nucleus_id" (default "root_id").
+    area : str, optional
+        Filter by area label: "V1", "AL", "RL", or "LM".
+
+    Returns
+    -------
+    dict
+        FunctionalAreaResponse with artifact_manifest, n_total,
+        area_distribution.
+    """
+    return cave_specific.get_functional_area(dataset, neuron_id, by, area)
 
 
 def main() -> None:

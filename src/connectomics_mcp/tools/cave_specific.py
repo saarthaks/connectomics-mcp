@@ -8,9 +8,15 @@ from typing import Any
 from connectomics_mcp.exceptions import DatasetNotSupported, StaleRootIdError
 from connectomics_mcp.output_contracts.formatters import (
     format_annotation_table,
+    format_cell_mtypes,
+    format_coregistration,
     format_edit_history,
+    format_functional_area,
+    format_functional_properties,
+    format_multi_input_spines,
     format_nucleus_resolution,
     format_proofreading_status,
+    format_synapse_targets,
 )
 from connectomics_mcp.registry import DATASETS, check_capability, get_backend
 
@@ -193,4 +199,295 @@ def resolve_nucleus_ids(
     raw = backend.resolve_nucleus_ids(nucleus_ids)
 
     response = format_nucleus_resolution(raw, dataset)
+    return response.model_dump()
+
+
+# ---------------------------------------------------------------------------
+# MICrONS-specific table tools
+# ---------------------------------------------------------------------------
+
+
+def _check_minnie65(dataset: str, tool_name: str) -> None:
+    """Validate that the dataset is minnie65 (MICrONS-only tools)."""
+    check_capability(dataset, "cave")
+    if dataset != "minnie65":
+        raise DatasetNotSupported(
+            dataset, f"{tool_name} (MICrONS-specific)",
+        )
+
+
+def get_coregistration(
+    neuron_id: int, dataset: str, by: str = "root_id"
+) -> dict[str, Any]:
+    """Get EM-to-functional imaging coregistration for a neuron.
+
+    Maps EM neurons to 2-photon functional imaging units (session,
+    scan, unit). Complete results saved as Parquet artifact.
+
+    Parameters
+    ----------
+    neuron_id : int
+        Root ID or nucleus ID.
+    dataset : str
+        Must be ``"minnie65"``.
+    by : str
+        ``"root_id"`` or ``"nucleus_id"``.
+
+    Returns
+    -------
+    dict
+        CoregistrationResponse with artifact_manifest.
+
+    Raises
+    ------
+    DatasetNotSupported
+        If not minnie65.
+    StaleRootIdError
+        If root ID is stale (when ``by="root_id"``).
+    """
+    _check_minnie65(dataset, "coregistration")
+
+    backend = get_backend(dataset)
+    raw = backend.query_coregistration(neuron_id, by=by)
+
+    if not raw.get("is_current", True):
+        raise StaleRootIdError(int(neuron_id))
+
+    response = format_coregistration(raw, dataset)
+    return response.model_dump()
+
+
+def get_functional_properties(
+    neuron_id: int,
+    dataset: str,
+    by: str = "root_id",
+    coregistration_source: str = "auto_phase3",
+) -> dict[str, Any]:
+    """Get digital twin functional properties for a neuron.
+
+    Returns orientation/direction selectivity, receptive field centers,
+    and model performance metrics. Complete results saved as Parquet
+    artifact.
+
+    Parameters
+    ----------
+    neuron_id : int
+        Root ID or nucleus ID.
+    dataset : str
+        Must be ``"minnie65"``.
+    by : str
+        ``"root_id"`` or ``"nucleus_id"``.
+    coregistration_source : str
+        Coregistration table variant: ``"coreg_v4"`` (default),
+        ``"auto_phase3"``, or ``"apl_vess"``.
+
+    Returns
+    -------
+    dict
+        FunctionalPropertiesResponse with artifact_manifest.
+
+    Raises
+    ------
+    DatasetNotSupported
+        If not minnie65.
+    StaleRootIdError
+        If root ID is stale (when ``by="root_id"``).
+    """
+    _check_minnie65(dataset, "functional_properties")
+
+    backend = get_backend(dataset)
+    raw = backend.query_functional_properties(
+        neuron_id, by=by, coregistration_source=coregistration_source
+    )
+
+    if not raw.get("is_current", True):
+        raise StaleRootIdError(int(neuron_id))
+
+    response = format_functional_properties(raw, dataset)
+    return response.model_dump()
+
+
+def get_synapse_targets(
+    root_id: int, dataset: str, direction: str = "post"
+) -> dict[str, Any]:
+    """Get per-synapse structural target predictions for a neuron.
+
+    Classifies each synapse as targeting spine, shaft, or soma.
+    Complete results saved as Parquet artifact.
+
+    Parameters
+    ----------
+    root_id : int
+        Root ID of the neuron.
+    dataset : str
+        Must be ``"minnie65"``.
+    direction : str
+        ``"post"`` for synapses onto this neuron (default),
+        ``"pre"`` for synapses from this neuron.
+
+    Returns
+    -------
+    dict
+        SynapseTargetsResponse with artifact_manifest.
+
+    Raises
+    ------
+    DatasetNotSupported
+        If not minnie65.
+    StaleRootIdError
+        If root ID is stale.
+    """
+    _check_minnie65(dataset, "synapse_targets")
+
+    backend = get_backend(dataset)
+    raw = backend.query_synapse_targets(root_id, direction=direction)
+
+    if not raw.get("is_current", True):
+        raise StaleRootIdError(int(root_id))
+
+    response = format_synapse_targets(raw, dataset)
+    return response.model_dump()
+
+
+def get_multi_input_spines(
+    root_id: int, dataset: str, direction: str = "post"
+) -> dict[str, Any]:
+    """Get multi-input spine predictions for a neuron.
+
+    Deprecated: prefer ``get_synapse_targets`` for general synapse
+    target queries. This table identifies spines receiving >1 input
+    synapse, grouped by shared postsynaptic compartment.
+
+    Parameters
+    ----------
+    root_id : int
+        Root ID of the neuron.
+    dataset : str
+        Must be ``"minnie65"``.
+    direction : str
+        ``"post"`` for spines on this neuron (default),
+        ``"pre"`` for spines from this neuron.
+
+    Returns
+    -------
+    dict
+        MultiInputSpinesResponse with artifact_manifest.
+
+    Raises
+    ------
+    DatasetNotSupported
+        If not minnie65.
+    StaleRootIdError
+        If root ID is stale.
+    """
+    _check_minnie65(dataset, "multi_input_spines")
+
+    backend = get_backend(dataset)
+    raw = backend.query_multi_input_spines(root_id, direction=direction)
+
+    if not raw.get("is_current", True):
+        raise StaleRootIdError(int(root_id))
+
+    response = format_multi_input_spines(raw, dataset)
+    return response.model_dump()
+
+
+def get_cell_mtypes(
+    dataset: str,
+    neuron_id: int | None = None,
+    by: str = "root_id",
+    cell_type: str | None = None,
+) -> dict[str, Any]:
+    """Get morphological cell type (mtype) classifications.
+
+    24 types based on dendritic features and connectivity motifs.
+    Excitatory: L2a, L2b, L3a, L3b, L3c, L4a, L4b, L4c, L5a, L5b,
+    L5ET, L5NP, L6a, L6b, L6c, L6CT, L6wm.
+    Inhibitory: PTC, DTC, STC, ITC.
+    Complete results saved as Parquet artifact.
+
+    Parameters
+    ----------
+    dataset : str
+        Must be ``"minnie65"``.
+    neuron_id : int, optional
+        Root ID or nucleus ID for single-neuron lookup.
+    by : str
+        ``"root_id"`` or ``"nucleus_id"``.
+    cell_type : str, optional
+        Filter by mtype (e.g. ``"L2a"``, ``"DTC"``).
+
+    Returns
+    -------
+    dict
+        CellMtypesResponse with artifact_manifest.
+
+    Raises
+    ------
+    DatasetNotSupported
+        If not minnie65.
+    StaleRootIdError
+        If root ID is stale (when querying by root_id).
+    """
+    _check_minnie65(dataset, "cell_mtypes")
+
+    backend = get_backend(dataset)
+    raw = backend.query_cell_mtypes(
+        neuron_id=neuron_id, by=by, cell_type=cell_type
+    )
+
+    if not raw.get("is_current", True):
+        raise StaleRootIdError(int(neuron_id))
+
+    response = format_cell_mtypes(raw, dataset)
+    return response.model_dump()
+
+
+def get_functional_area(
+    dataset: str,
+    neuron_id: int | None = None,
+    by: str = "root_id",
+    area: str | None = None,
+) -> dict[str, Any]:
+    """Get functional brain area assignments for MICrONS neurons.
+
+    Areas: V1, AL, RL, LM — inferred from 2-photon imaging
+    boundaries projected into EM space. The ``value`` column is
+    distance to nearest area boundary in micrometers (higher =
+    more confident). Complete results saved as Parquet artifact.
+
+    Parameters
+    ----------
+    dataset : str
+        Must be ``"minnie65"``.
+    neuron_id : int, optional
+        Root ID or nucleus ID for single-neuron lookup.
+    by : str
+        ``"root_id"`` or ``"nucleus_id"``.
+    area : str, optional
+        Filter by area label (``"V1"``, ``"AL"``, ``"RL"``, ``"LM"``).
+
+    Returns
+    -------
+    dict
+        FunctionalAreaResponse with artifact_manifest.
+
+    Raises
+    ------
+    DatasetNotSupported
+        If not minnie65.
+    StaleRootIdError
+        If root ID is stale (when querying by root_id).
+    """
+    _check_minnie65(dataset, "functional_area")
+
+    backend = get_backend(dataset)
+    raw = backend.query_functional_area(
+        neuron_id=neuron_id, by=by, area=area
+    )
+
+    if not raw.get("is_current", True):
+        raise StaleRootIdError(int(neuron_id))
+
+    response = format_functional_area(raw, dataset)
     return response.model_dump()

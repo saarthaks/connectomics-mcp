@@ -11,6 +11,8 @@ from connectomics_mcp.neuroglancer.url_builder import (
     build_neuroglancer_url as _build_ngl_url,
 )
 from connectomics_mcp.output_contracts.formatters import (
+    format_cell_type_search,
+    format_cell_type_taxonomy,
     format_connectivity,
     format_neuron_info,
     format_neuroglancer_url,
@@ -250,6 +252,84 @@ def build_neuroglancer_url_tool(
         layers=layers,
         coordinate_space=coordinate_space,
     )
+    return response.model_dump()
+
+
+def get_cell_type_taxonomy(dataset: str) -> dict[str, Any]:
+    """Get the cell type taxonomy/hierarchy for a dataset.
+
+    Returns the classification levels, top values at each level
+    with neuron counts, and example lineages showing the full
+    classification path for representative neurons.
+
+    For FlyWire, shows: super_class → cell_class → cell_sub_class →
+    cell_type with top values and example lineages. For hemibrain,
+    shows the flat type namespace. For MICrONS, shows cell types.
+
+    Use this to understand how a dataset organizes its cell types
+    before querying with ``search_cell_types`` or ``get_neurons_by_type``.
+
+    Parameters
+    ----------
+    dataset : str
+        Dataset to query. Supported: "minnie65", "flywire",
+        "hemibrain".
+
+    Returns
+    -------
+    dict
+        CellTypeTaxonomyResponse with levels, example_lineages,
+        and n_total_neurons.
+
+    Raises
+    ------
+    DatasetNotSupported
+        If the dataset is unknown or does not support universal tools.
+    """
+    check_capability(dataset, "universal")
+
+    backend = get_backend(dataset)
+    raw = backend.get_cell_type_taxonomy()
+
+    response = format_cell_type_taxonomy(raw, dataset)
+    return response.model_dump()
+
+
+def search_cell_types(
+    query: str, dataset: str
+) -> dict[str, Any]:
+    """Search for cell types matching a query string.
+
+    Performs case-insensitive substring matching across all available
+    annotation levels in the specified dataset. Use this to discover
+    cell type naming conventions before calling ``get_neurons_by_type``.
+
+    Parameters
+    ----------
+    query : str
+        Search string (e.g. "EPG", "ring", "compass", "KC").
+    dataset : str
+        Dataset to search. Supported: "minnie65", "flywire",
+        "hemibrain".
+
+    Returns
+    -------
+    dict
+        CellTypeSearchResponse as a dict with keys: dataset, query,
+        n_matches, matches (list with cell_type, classification_level,
+        n_neurons), warnings.
+
+    Raises
+    ------
+    DatasetNotSupported
+        If the dataset is unknown or does not support universal tools.
+    """
+    check_capability(dataset, "universal")
+
+    backend = get_backend(dataset)
+    raw = backend.search_cell_types(query)
+
+    response = format_cell_type_search(raw, dataset)
     return response.model_dump()
 
 

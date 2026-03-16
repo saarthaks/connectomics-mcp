@@ -49,6 +49,40 @@ class ConnectomeBackend(ABC):
         """
 
     @abstractmethod
+    def search_cell_types(self, query: str) -> dict[str, Any]:
+        """Search for cell types matching a query string.
+
+        Performs case-insensitive substring matching across all
+        available annotation levels.
+
+        Parameters
+        ----------
+        query : str
+            Search string (e.g. "EPG", "ring", "compass").
+
+        Returns
+        -------
+        dict
+            Keys: dataset, query, matches (list of dicts with
+            cell_type, classification_level, n_neurons).
+        """
+
+    @abstractmethod
+    def get_cell_type_taxonomy(self) -> dict[str, Any]:
+        """Return the cell type taxonomy/hierarchy for this dataset.
+
+        Shows the classification levels, top values at each level
+        with neuron counts, and example lineages (full path from
+        broadest to finest level).
+
+        Returns
+        -------
+        dict
+            Keys: dataset, n_total_neurons, levels (list of level
+            dicts), example_lineages (list of path dicts).
+        """
+
+    @abstractmethod
     def get_neurons_by_type(
         self, cell_type: str, region: str | None = None
     ) -> dict[str, Any]:

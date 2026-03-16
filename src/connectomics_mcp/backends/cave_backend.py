@@ -19,6 +19,11 @@ import pandas as pd
 
 from connectomics_mcp.backends.base import ConnectomeBackend
 from connectomics_mcp.exceptions import BackendConnectionError
+from connectomics_mcp.taxonomy_cache import (
+    get_vocab_for_search,
+    load_vocab,
+    save_vocab,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1006,6 +1011,151 @@ class CAVEBackend(ConnectomeBackend):
 
         raise DatasetNotSupported(self.dataset_name, "neuprint")
 
+    def _build_and_cache_cave_vocab(self) -> dict[str, Any]:
+        """Build vocabulary from cell type table and cache to disk."""
+        mat_version = None
+        try:
+            mat_version = self.client.materialize.version
+        except Exception:
+            pass
+
+        if not self.cell_type_table:
+            return {"n_total_neurons": 0, "levels": [], "example_lineages": []}
+
+        ct_df = self.client.materialize.query_table(
+            self.cell_type_table,
+            select_columns=["pt_root_id", self.cell_type_column],
+        )
+        n_total = int(ct_df["pt_root_id"].nunique()) if not ct_df.empty else 0
+        values = []
+        if not ct_df.empty:
+            counts = ct_df[self.cell_type_column].value_counts()
+            values = [
+                {"name": str(ct), "n_neurons": int(n)}
+                for ct, n in counts.items()
+            ]
+
+        levels = [{"level_name": "cell_type", "values": values}]
+        save_vocab(self.dataset_name, mat_version, levels, [], n_total)
+
+        return {
+            "n_total_neurons": n_total,
+            "levels": levels,
+            "example_lineages": [],
+        }
+
+    def _get_cave_vocab(self) -> dict[str, Any]:
+        """Get taxonomy vocabulary — disk cache first, then build."""
+        mat_version = None
+        try:
+            mat_version = self.client.materialize.version
+        except Exception:
+            pass
+
+        cached = load_vocab(self.dataset_name, mat_version)
+        if cached is not None:
+            return cached
+
+        return self._build_and_cache_cave_vocab()
+
+    def get_cell_type_taxonomy(self) -> dict[str, Any]:
+        """Return cell type taxonomy for a CAVE dataset.
+
+        Reads from disk-cached vocabulary (24hr TTL).
+        """
+        logger.debug("get_cell_type_taxonomy() on %s", self.dataset_name)
+
+        warnings: list[str] = []
+
+        if not self.cell_type_table:
+            return {
+                "dataset": self.dataset_name,
+                "n_total_neurons": 0,
+                "levels": [],
+                "example_lineages": [],
+                "warnings": ["No cell type table configured for this dataset"],
+            }
+
+        try:
+            vocab = self._get_cave_vocab()
+        except Exception as e:
+            logger.warning("Failed to get taxonomy vocab: %s", e)
+            return {
+                "dataset": self.dataset_name,
+                "n_total_neurons": 0,
+                "levels": [],
+                "example_lineages": [],
+                "warnings": [f"Failed to query cell type table: {e}"],
+            }
+
+        return {
+            "dataset": self.dataset_name,
+            "n_total_neurons": vocab.get("n_total_neurons", 0),
+            "levels": vocab.get("levels", []),
+            "example_lineages": [],
+            "warnings": warnings,
+        }
+
+    def search_cell_types(self, query: str) -> dict[str, Any]:
+        """Search for cell types in CAVE using cached vocabulary.
+
+        Uses the disk-cached vocabulary for substring matching — zero
+        API calls on cache hit.
+        """
+        logger.debug(
+            "search_cell_types(%s) on %s", query, self.dataset_name,
+        )
+
+        warnings: list[str] = []
+
+        if not self.cell_type_table:
+            return {
+                "dataset": self.dataset_name,
+                "query": query,
+                "matches": [],
+                "taxonomy_hints": [],
+                "warnings": ["No cell type table configured for this dataset"],
+            }
+
+        try:
+            vocab = self._get_cave_vocab()
+        except Exception as e:
+            logger.warning("Failed to get taxonomy vocab: %s", e)
+            return {
+                "dataset": self.dataset_name,
+                "query": query,
+                "matches": [],
+                "taxonomy_hints": [],
+                "warnings": [f"Failed to query cell type table: {e}"],
+            }
+
+        # Search the cached vocabulary — pure local operation
+        query_lower = query.lower()
+        matches = []
+        for level_data in vocab.get("levels", []):
+            for v in level_data.get("values", []):
+                if query_lower in v["name"].lower():
+                    matches.append({
+                        "cell_type": v["name"],
+                        "classification_level": level_data["level_name"],
+                        "n_neurons": v["n_neurons"],
+                    })
+
+        taxonomy_hints: list[str] = []
+        if not matches:
+            taxonomy_hints.append(
+                f"No matches for '{query}' in {self.dataset_name}. "
+                f"Use get_cell_type_taxonomy() to see available types."
+            )
+
+        return {
+            "dataset": self.dataset_name,
+            "query": query,
+            "matches": matches,
+            "taxonomy_hints": taxonomy_hints,
+            "warnings": warnings,
+        }
+
     def get_neurons_by_type(
         self, cell_type: str, region: str | None = None
     ) -> dict[str, Any]:
@@ -1186,6 +1336,487 @@ class MICrONSBackend(CAVEBackend):
             partners_df["partner_nucleus_conflict"] = False
 
         return partners_df
+
+    # -- MICrONS-specific table queries ------------------------------------
+
+    # Table name constants
+    COREGISTRATION_TABLE = "coregistration_auto_phase3_fwd_apl_vess_combined_v2"
+    FUNCTIONAL_PROPERTIES_TABLES = {
+        "coreg_v4": "digital_twin_properties_bcm_coreg_v4",
+        "auto_phase3": "digital_twin_properties_bcm_coreg_auto_phase3_fwd_v2",
+        "apl_vess": "digital_twin_properties_bcm_coreg_apl_vess_fwd",
+    }
+    SYNAPSE_TARGETS_TABLE = "synapse_target_predictions_ssa_v2"
+    MULTI_INPUT_SPINES_TABLE = "multi_input_spine_predictions_ssa"
+    CELL_MTYPES_TABLE = "aibs_metamodel_mtypes_v661_v2"
+    FUNCTIONAL_AREA_TABLE = "nucleus_functional_area_assignment"
+
+    def _staleness_gate(self, root_id: int) -> tuple[bool, list[str]]:
+        """Check root ID currency and return (is_current, warnings)."""
+        warnings: list[str] = []
+        is_current = True
+        try:
+            is_latest = self.client.chunkedgraph.is_latest_roots([root_id])
+            is_current = bool(is_latest[0]) if is_latest else True
+            if not is_current:
+                warnings.append(
+                    f"Root ID {root_id} is outdated. "
+                    f"Use `validate_root_ids()` to get current IDs."
+                )
+        except Exception as e:
+            logger.warning("Failed staleness check for %d: %s", root_id, e)
+            warnings.append(f"Could not verify root ID currency: {e}")
+        return is_current, warnings
+
+    def _query_reference_table(
+        self,
+        table_name: str,
+        root_id: int | None = None,
+        nucleus_id: int | None = None,
+        extra_filters: dict[str, Any] | None = None,
+    ) -> pd.DataFrame:
+        """Query a CAVE reference table using the appropriate API.
+
+        Reference tables have bound spatial point columns
+        (``pt_root_id``, ``pt_supervoxel_id``) that cannot be filtered
+        via ``filter_equal_dict``.  Root-ID lookups use the
+        content-aware API; nucleus-ID lookups use ``target_id`` in
+        ``filter_equal_dict``.
+
+        Parameters
+        ----------
+        table_name : str
+            CAVE table name.
+        root_id : int, optional
+            Root ID — uses content-aware API.
+        nucleus_id : int, optional
+            Nucleus ID — uses ``filter_equal_dict`` on ``target_id``.
+        extra_filters : dict, optional
+            Additional ``filter_equal_dict`` entries (e.g. cell_type).
+
+        Returns
+        -------
+        pd.DataFrame
+        """
+        if root_id is not None:
+            # Content-aware API for bound spatial point columns
+            table_ref = getattr(self.client.materialize.tables, table_name)
+            return table_ref(pt_root_id=root_id).query()
+
+        query_kwargs: dict[str, Any] = {}
+        filter_dict: dict[str, Any] = {}
+        if nucleus_id is not None:
+            filter_dict["target_id"] = nucleus_id
+        if extra_filters:
+            filter_dict.update(extra_filters)
+        if filter_dict:
+            query_kwargs["filter_equal_dict"] = filter_dict
+
+        return self.client.materialize.query_table(table_name, **query_kwargs)
+
+    def query_coregistration(
+        self,
+        neuron_id: int,
+        by: str = "root_id",
+    ) -> dict[str, Any]:
+        """Query coregistration table for EM-to-functional unit mappings.
+
+        Parameters
+        ----------
+        neuron_id : int
+            Root ID or nucleus ID to query.
+        by : str
+            ``"root_id"`` or ``"nucleus_id"``.
+
+        Returns
+        -------
+        dict
+            Raw result with ``table_df`` key.
+        """
+        logger.debug(
+            "query_coregistration(%d, by=%s) on %s",
+            neuron_id, by, self.dataset_name,
+        )
+        warnings: list[str] = []
+        is_current = True
+
+        if by == "root_id":
+            is_current, stale_warnings = self._staleness_gate(neuron_id)
+            warnings.extend(stale_warnings)
+
+        mat_version = None
+        try:
+            mat_version = self.client.materialize.version
+        except Exception:
+            pass
+
+        try:
+            table_df = self._query_reference_table(
+                self.COREGISTRATION_TABLE,
+                root_id=neuron_id if by == "root_id" else None,
+                nucleus_id=neuron_id if by == "nucleus_id" else None,
+            )
+        except Exception as e:
+            logger.warning("Failed to query coregistration: %s", e)
+            warnings.append(f"Failed to query coregistration: {e}")
+            table_df = pd.DataFrame()
+
+        return {
+            "dataset": self.dataset_name,
+            "table_name": self.COREGISTRATION_TABLE,
+            "materialization_version": mat_version,
+            "warnings": warnings,
+            "table_df": table_df,
+            "neuron_id": neuron_id,
+            "by": by,
+            "is_current": is_current,
+        }
+
+    def query_functional_properties(
+        self,
+        neuron_id: int,
+        by: str = "root_id",
+        coregistration_source: str = "auto_phase3",
+    ) -> dict[str, Any]:
+        """Query digital twin functional properties.
+
+        Parameters
+        ----------
+        neuron_id : int
+            Root ID or nucleus ID to query.
+        by : str
+            ``"root_id"`` or ``"nucleus_id"``.
+        coregistration_source : str
+            One of ``"auto_phase3"`` (default, largest coverage),
+            ``"coreg_v4"`` (manual), ``"apl_vess"``.
+
+        Returns
+        -------
+        dict
+            Raw result with ``table_df`` key.
+        """
+        logger.debug(
+            "query_functional_properties(%d, by=%s, src=%s) on %s",
+            neuron_id, by, coregistration_source, self.dataset_name,
+        )
+        warnings: list[str] = []
+        is_current = True
+
+        table_name = self.FUNCTIONAL_PROPERTIES_TABLES.get(coregistration_source)
+        if table_name is None:
+            valid = list(self.FUNCTIONAL_PROPERTIES_TABLES.keys())
+            raise ValueError(
+                f"Unknown coregistration_source '{coregistration_source}'. "
+                f"Valid values: {valid}"
+            )
+
+        if by == "root_id":
+            is_current, stale_warnings = self._staleness_gate(neuron_id)
+            warnings.extend(stale_warnings)
+
+        mat_version = None
+        try:
+            mat_version = self.client.materialize.version
+        except Exception:
+            pass
+
+        try:
+            table_df = self._query_reference_table(
+                table_name,
+                root_id=neuron_id if by == "root_id" else None,
+                nucleus_id=neuron_id if by == "nucleus_id" else None,
+            )
+        except Exception as e:
+            logger.warning("Failed to query functional properties: %s", e)
+            warnings.append(f"Failed to query functional properties: {e}")
+            table_df = pd.DataFrame()
+
+        return {
+            "dataset": self.dataset_name,
+            "table_name": table_name,
+            "materialization_version": mat_version,
+            "warnings": warnings,
+            "table_df": table_df,
+            "neuron_id": neuron_id,
+            "by": by,
+            "coregistration_source": coregistration_source,
+            "is_current": is_current,
+        }
+
+    def query_synapse_targets(
+        self,
+        root_id: int,
+        direction: str = "post",
+    ) -> dict[str, Any]:
+        """Query synapse target structure predictions.
+
+        Uses the content-aware query API because bound spatial point
+        columns (``pre_pt_root_id``, ``post_pt_root_id``) cannot be
+        filtered via ``filter_equal_dict``.
+
+        Parameters
+        ----------
+        root_id : int
+            Root ID of the neuron.
+        direction : str
+            ``"post"`` to get synapses onto this neuron (default),
+            ``"pre"`` to get synapses from this neuron.
+
+        Returns
+        -------
+        dict
+            Raw result with ``table_df`` key.
+        """
+        logger.debug(
+            "query_synapse_targets(%d, direction=%s) on %s",
+            root_id, direction, self.dataset_name,
+        )
+        warnings: list[str] = []
+        is_current, stale_warnings = self._staleness_gate(root_id)
+        warnings.extend(stale_warnings)
+
+        mat_version = None
+        try:
+            mat_version = self.client.materialize.version
+        except Exception:
+            pass
+
+        try:
+            table_ref = getattr(
+                self.client.materialize.tables,
+                self.SYNAPSE_TARGETS_TABLE,
+            )
+            if direction == "post":
+                table_df = table_ref(post_pt_root_id=root_id).query()
+            else:
+                table_df = table_ref(pre_pt_root_id=root_id).query()
+        except Exception as e:
+            logger.warning("Failed to query synapse targets: %s", e)
+            warnings.append(f"Failed to query synapse targets: {e}")
+            table_df = pd.DataFrame()
+
+        return {
+            "dataset": self.dataset_name,
+            "table_name": self.SYNAPSE_TARGETS_TABLE,
+            "materialization_version": mat_version,
+            "warnings": warnings,
+            "table_df": table_df,
+            "neuron_id": root_id,
+            "direction": direction,
+            "is_current": is_current,
+        }
+
+    def query_multi_input_spines(
+        self,
+        root_id: int,
+        direction: str = "post",
+    ) -> dict[str, Any]:
+        """Query multi-input spine predictions (deprecated).
+
+        Uses the content-aware query API for bound spatial point columns.
+
+        Parameters
+        ----------
+        root_id : int
+            Root ID of the neuron.
+        direction : str
+            ``"post"`` to get spines on this neuron (default),
+            ``"pre"`` to get spines from this neuron.
+
+        Returns
+        -------
+        dict
+            Raw result with ``table_df`` key.
+        """
+        logger.debug(
+            "query_multi_input_spines(%d, direction=%s) on %s",
+            root_id, direction, self.dataset_name,
+        )
+        warnings: list[str] = [
+            "This table is deprecated. Prefer get_synapse_targets for general use."
+        ]
+        is_current, stale_warnings = self._staleness_gate(root_id)
+        warnings.extend(stale_warnings)
+
+        mat_version = None
+        try:
+            mat_version = self.client.materialize.version
+        except Exception:
+            pass
+
+        try:
+            table_ref = getattr(
+                self.client.materialize.tables,
+                self.MULTI_INPUT_SPINES_TABLE,
+            )
+            if direction == "post":
+                table_df = table_ref(post_pt_root_id=root_id).query()
+            else:
+                table_df = table_ref(pre_pt_root_id=root_id).query()
+        except Exception as e:
+            logger.warning("Failed to query multi-input spines: %s", e)
+            warnings.append(f"Failed to query multi-input spines: {e}")
+            table_df = pd.DataFrame()
+
+        return {
+            "dataset": self.dataset_name,
+            "table_name": self.MULTI_INPUT_SPINES_TABLE,
+            "materialization_version": mat_version,
+            "warnings": warnings,
+            "table_df": table_df,
+            "neuron_id": root_id,
+            "direction": direction,
+            "is_current": is_current,
+        }
+
+    def query_cell_mtypes(
+        self,
+        neuron_id: int | None = None,
+        by: str = "root_id",
+        cell_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Query morphological cell type classifications.
+
+        Parameters
+        ----------
+        neuron_id : int, optional
+            Root ID or nucleus ID to query a single neuron.
+        by : str
+            ``"root_id"`` or ``"nucleus_id"``.
+        cell_type : str, optional
+            Filter by cell type (e.g. ``"L2a"``, ``"DTC"``).
+
+        Returns
+        -------
+        dict
+            Raw result with ``table_df`` key.
+        """
+        logger.debug(
+            "query_cell_mtypes(id=%s, by=%s, type=%s) on %s",
+            neuron_id, by, cell_type, self.dataset_name,
+        )
+        warnings: list[str] = []
+        is_current = True
+
+        if neuron_id is not None and by == "root_id":
+            is_current, stale_warnings = self._staleness_gate(neuron_id)
+            warnings.extend(stale_warnings)
+
+        mat_version = None
+        try:
+            mat_version = self.client.materialize.version
+        except Exception:
+            pass
+
+        try:
+            extra_filters = {"cell_type": cell_type} if cell_type else None
+            if neuron_id is not None:
+                table_df = self._query_reference_table(
+                    self.CELL_MTYPES_TABLE,
+                    root_id=neuron_id if by == "root_id" else None,
+                    nucleus_id=neuron_id if by == "nucleus_id" else None,
+                    extra_filters=extra_filters,
+                )
+            elif cell_type is not None:
+                table_df = self._query_reference_table(
+                    self.CELL_MTYPES_TABLE,
+                    extra_filters=extra_filters,
+                )
+            else:
+                table_df = self.client.materialize.query_table(
+                    self.CELL_MTYPES_TABLE
+                )
+        except Exception as e:
+            logger.warning("Failed to query cell mtypes: %s", e)
+            warnings.append(f"Failed to query cell mtypes: {e}")
+            table_df = pd.DataFrame()
+
+        return {
+            "dataset": self.dataset_name,
+            "table_name": self.CELL_MTYPES_TABLE,
+            "materialization_version": mat_version,
+            "warnings": warnings,
+            "table_df": table_df,
+            "neuron_id": neuron_id,
+            "by": by,
+            "cell_type": cell_type,
+            "is_current": is_current,
+        }
+
+    def query_functional_area(
+        self,
+        neuron_id: int | None = None,
+        by: str = "root_id",
+        area: str | None = None,
+    ) -> dict[str, Any]:
+        """Query functional brain area assignments.
+
+        Parameters
+        ----------
+        neuron_id : int, optional
+            Root ID or nucleus ID to query a single neuron.
+        by : str
+            ``"root_id"`` or ``"nucleus_id"``.
+        area : str, optional
+            Filter by area label (one of ``"V1"``, ``"AL"``,
+            ``"RL"``, ``"LM"``).
+
+        Returns
+        -------
+        dict
+            Raw result with ``table_df`` key.
+        """
+        logger.debug(
+            "query_functional_area(id=%s, by=%s, area=%s) on %s",
+            neuron_id, by, area, self.dataset_name,
+        )
+        warnings: list[str] = []
+        is_current = True
+
+        if neuron_id is not None and by == "root_id":
+            is_current, stale_warnings = self._staleness_gate(neuron_id)
+            warnings.extend(stale_warnings)
+
+        mat_version = None
+        try:
+            mat_version = self.client.materialize.version
+        except Exception:
+            pass
+
+        try:
+            extra_filters = {"tag": area} if area else None
+            if neuron_id is not None:
+                table_df = self._query_reference_table(
+                    self.FUNCTIONAL_AREA_TABLE,
+                    root_id=neuron_id if by == "root_id" else None,
+                    nucleus_id=neuron_id if by == "nucleus_id" else None,
+                    extra_filters=extra_filters,
+                )
+            elif area is not None:
+                table_df = self._query_reference_table(
+                    self.FUNCTIONAL_AREA_TABLE,
+                    extra_filters=extra_filters,
+                )
+            else:
+                table_df = self.client.materialize.query_table(
+                    self.FUNCTIONAL_AREA_TABLE
+                )
+        except Exception as e:
+            logger.warning("Failed to query functional area: %s", e)
+            warnings.append(f"Failed to query functional area: {e}")
+            table_df = pd.DataFrame()
+
+        return {
+            "dataset": self.dataset_name,
+            "table_name": self.FUNCTIONAL_AREA_TABLE,
+            "materialization_version": mat_version,
+            "warnings": warnings,
+            "table_df": table_df,
+            "neuron_id": neuron_id,
+            "by": by,
+            "area": area,
+            "is_current": is_current,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -1400,13 +2031,337 @@ class FlyWireBackend(CAVEBackend):
             "strategy_dendrite": None,
         }
 
+    def _build_and_cache_vocab(self) -> dict[str, Any]:
+        """Build vocabulary from BOTH annotation systems and cache to disk.
+
+        FlyWire has two independent annotation systems:
+        1. ``hierarchical_neuron_annotations`` — broad categories
+           (super_class → cell_class → cell_sub_class → cell_type)
+        2. ``neuron_information_v2`` — specific cell type labels in
+           the ``tag`` column (e.g. EPG, PEN_a, Delta7)
+
+        Both are included in the vocabulary so searches find names
+        from either system.
+        """
+        hier_df = self._get_hierarchy_df()
+
+        mat_version = None
+        try:
+            mat_version = self.client.materialize.version
+        except Exception:
+            pass
+
+        n_total = int(hier_df["pt_root_id"].nunique()) if not hier_df.empty else 0
+
+        # Build per-level summaries from hierarchy table
+        levels = []
+        if not hier_df.empty:
+            for level in HIERARCHY_LEVELS:
+                level_df = hier_df[hier_df["classification_system"] == level]
+                if level_df.empty:
+                    continue
+                counts = (
+                    level_df.groupby("cell_type")["pt_root_id"]
+                    .nunique()
+                    .sort_values(ascending=False)
+                )
+                values = [
+                    {"name": str(ct), "n_neurons": int(n)}
+                    for ct, n in counts.items()
+                ]
+                levels.append({
+                    "level_name": level,
+                    "values": values,
+                })
+
+        # Also fetch specific cell type labels from neuron_information_v2
+        # This table has the hemibrain-style names (EPG, PEN_a, etc.)
+        if self.cell_type_table:
+            try:
+                tag_df = self.client.materialize.query_table(
+                    self.cell_type_table,
+                    select_columns=["pt_root_id", self.cell_type_column],
+                )
+                if not tag_df.empty:
+                    tag_counts = tag_df[self.cell_type_column].value_counts()
+                    tag_values = [
+                        {"name": str(ct), "n_neurons": int(n)}
+                        for ct, n in tag_counts.items()
+                        if pd.notna(ct) and str(ct).strip()
+                    ]
+                    if tag_values:
+                        levels.append({
+                            "level_name": "tag",
+                            "values": tag_values,
+                        })
+            except Exception as e:
+                logger.warning(
+                    "Failed to fetch %s for vocab: %s",
+                    self.cell_type_table, e,
+                )
+
+        # Build example lineages from hierarchy
+        example_lineages = []
+        if not hier_df.empty:
+            class_df = hier_df[hier_df["classification_system"] == "cell_class"]
+            if not class_df.empty:
+                sample_classes = (
+                    class_df.groupby("cell_type")["pt_root_id"]
+                    .first()
+                    .head(10)
+                )
+                for class_name, sample_rid in sample_classes.items():
+                    lineage = {}
+                    neuron_rows = hier_df[hier_df["pt_root_id"] == sample_rid]
+                    for _, row in neuron_rows.iterrows():
+                        lvl = row.get("classification_system")
+                        ct = row.get("cell_type")
+                        if lvl and ct and pd.notna(lvl) and pd.notna(ct):
+                            lineage[str(lvl)] = str(ct)
+                    if lineage:
+                        example_lineages.append(lineage)
+
+        vocab = {
+            "n_total_neurons": n_total,
+            "levels": levels,
+            "example_lineages": example_lineages,
+        }
+
+        # Cache to disk
+        save_vocab(
+            self.dataset_name, mat_version,
+            levels, example_lineages, n_total,
+        )
+
+        return vocab
+
+    def _get_vocab(self) -> dict[str, Any]:
+        """Get taxonomy vocabulary — disk cache first, then build."""
+        mat_version = None
+        try:
+            mat_version = self.client.materialize.version
+        except Exception:
+            pass
+
+        cached = load_vocab(self.dataset_name, mat_version)
+        if cached is not None:
+            return cached
+
+        return self._build_and_cache_vocab()
+
+    def get_cell_type_taxonomy(self) -> dict[str, Any]:
+        """Return the full FlyWire hierarchical taxonomy.
+
+        Reads from disk-cached vocabulary (24hr TTL). First call
+        fetches the hierarchy table and caches; subsequent calls
+        are zero-API-call local reads.
+        """
+        logger.debug("get_cell_type_taxonomy() on %s", self.dataset_name)
+
+        warnings: list[str] = []
+
+        try:
+            vocab = self._get_vocab()
+        except Exception as e:
+            logger.warning("Failed to get taxonomy vocab: %s", e)
+            return {
+                "dataset": self.dataset_name,
+                "n_total_neurons": 0,
+                "levels": [],
+                "example_lineages": [],
+                "warnings": [f"Failed to fetch taxonomy: {e}"],
+            }
+
+        # Trim values per level for context-window friendliness
+        trimmed_levels = []
+        for level_data in vocab.get("levels", []):
+            trimmed_levels.append({
+                "level_name": level_data["level_name"],
+                "values": level_data["values"][:30],
+            })
+
+        return {
+            "dataset": self.dataset_name,
+            "n_total_neurons": vocab.get("n_total_neurons", 0),
+            "levels": trimmed_levels,
+            "example_lineages": vocab.get("example_lineages", []),
+            "warnings": warnings,
+        }
+
+    def search_cell_types(self, query: str) -> dict[str, Any]:
+        """Search for cell types across all FlyWire annotation systems.
+
+        Searches both ``hierarchical_neuron_annotations`` (broad
+        categories) and ``neuron_information_v2`` tag column (specific
+        types like EPG, PEN_a, Delta7). Uses disk-cached vocabulary
+        (24hr TTL) — zero API calls on cache hit.
+        """
+        logger.debug(
+            "search_cell_types(%s) on %s", query, self.dataset_name,
+        )
+
+        warnings: list[str] = []
+
+        try:
+            vocab = self._get_vocab()
+        except Exception as e:
+            logger.warning("Failed to get taxonomy vocab: %s", e)
+            return {
+                "dataset": self.dataset_name,
+                "query": query,
+                "matches": [],
+                "taxonomy_hints": [],
+                "warnings": [f"Failed to fetch taxonomy: {e}"],
+            }
+
+        # Search the cached vocabulary — pure local operation
+        query_lower = query.lower()
+        matches = []
+        # tag (specific types) > cell_type > cell_sub_class > cell_class > super_class
+        level_order = {"tag": 4}
+        level_order.update({lv: i for i, lv in enumerate(HIERARCHY_LEVELS)})
+
+        for level_data in vocab.get("levels", []):
+            level_name = level_data["level_name"]
+            for v in level_data.get("values", []):
+                if query_lower in v["name"].lower():
+                    matches.append({
+                        "cell_type": v["name"],
+                        "classification_level": level_name,
+                        "n_neurons": v["n_neurons"],
+                    })
+
+        # Sort: prefer tag level (most specific) first, then by count
+        matches.sort(
+            key=lambda m: (
+                -level_order.get(m["classification_level"], -1),
+                -m["n_neurons"],
+            ),
+        )
+        matches = matches[:50]
+
+        # When 0 matches, provide taxonomy hints from cached vocab
+        taxonomy_hints: list[str] = []
+        if not matches:
+            class_level = next(
+                (lv for lv in vocab.get("levels", [])
+                 if lv["level_name"] == "cell_class"),
+                None,
+            )
+            if class_level:
+                class_strs = [
+                    f"{v['name']} ({v['n_neurons']})"
+                    for v in class_level["values"][:15]
+                ]
+                taxonomy_hints.append(
+                    f"No matches for '{query}'. FlyWire uses a 4-level "
+                    f"hierarchy: super_class → cell_class → cell_sub_class "
+                    f"→ cell_type. Available cell_class categories: "
+                    f"{', '.join(class_strs)}. Try searching within a "
+                    f"relevant category, or use get_cell_type_taxonomy() "
+                    f"to browse the full hierarchy."
+                )
+
+        return {
+            "dataset": self.dataset_name,
+            "query": query,
+            "matches": matches,
+            "taxonomy_hints": taxonomy_hints,
+            "warnings": warnings,
+        }
+
+    def _find_matching_root_ids(
+        self, hier_df: pd.DataFrame, cell_type: str
+    ) -> tuple[pd.DataFrame, str, list[str]]:
+        """Find neurons matching cell_type with progressive fallback.
+
+        Search strategy:
+        1. Exact match on cell_type classification level
+        2. Exact match on ANY classification level
+        3. Case-insensitive exact match on ANY level
+        4. Case-insensitive substring match on ANY level
+
+        Returns
+        -------
+        tuple of (matched_df, match_strategy, warnings)
+        """
+        warnings: list[str] = []
+
+        # 1. Exact match on cell_type level (original behavior)
+        matches = hier_df[
+            (hier_df["classification_system"] == "cell_type")
+            & (hier_df["cell_type"] == cell_type)
+        ]
+        if not matches.empty:
+            return matches, "exact_cell_type_level", warnings
+
+        # 2. Exact match on ANY classification level
+        matches = hier_df[hier_df["cell_type"] == cell_type]
+        if not matches.empty:
+            levels_found = matches["classification_system"].unique().tolist()
+            warnings.append(
+                f"'{cell_type}' not found at cell_type level but matched "
+                f"at: {', '.join(levels_found)}"
+            )
+            return matches, "exact_any_level", warnings
+
+        # 3. Case-insensitive exact match on ANY level
+        ct_lower = cell_type.lower()
+        mask_ci = hier_df["cell_type"].astype(str).str.lower() == ct_lower
+        matches = hier_df[mask_ci]
+        if not matches.empty:
+            actual_names = matches["cell_type"].unique().tolist()
+            warnings.append(
+                f"'{cell_type}' matched case-insensitively as: "
+                f"{', '.join(str(n) for n in actual_names)}"
+            )
+            return matches, "case_insensitive", warnings
+
+        # 4. Case-insensitive substring match on ANY level
+        mask_sub = hier_df["cell_type"].astype(str).str.lower().str.contains(
+            ct_lower, na=False, regex=False,
+        )
+        matches = hier_df[mask_sub]
+        if not matches.empty:
+            # Group to show what was found
+            found_types = (
+                matches.groupby(["classification_system", "cell_type"])
+                ["pt_root_id"].nunique()
+                .reset_index()
+                .sort_values("pt_root_id", ascending=False)
+                .head(10)
+            )
+            suggestions = [
+                f"{row['cell_type']} ({row['classification_system']}, "
+                f"{row['pt_root_id']} neurons)"
+                for _, row in found_types.iterrows()
+            ]
+            warnings.append(
+                f"'{cell_type}' matched via substring search. "
+                f"Matching types: {'; '.join(suggestions)}. "
+                f"Use search_cell_types() for broader discovery."
+            )
+            return matches, "substring", warnings
+
+        # 5. Nothing found — generate suggestions
+        # Try partial match with shorter substrings for suggestions
+        suggestions_msg = (
+            f"No neurons found matching '{cell_type}' in FlyWire. "
+            f"FlyWire uses its own naming conventions in "
+            f"hierarchical_neuron_annotations. Use search_cell_types("
+            f"'{cell_type}', dataset='flywire') to discover available names."
+        )
+        warnings.append(suggestions_msg)
+        return pd.DataFrame(), "no_match", warnings
+
     def get_neurons_by_type(
         self, cell_type: str, region: str | None = None
     ) -> dict[str, Any]:
         """Fetch neurons by type using FlyWire hierarchy cache.
 
-        Full override — uses ``hierarchical_neuron_annotations`` instead
-        of ``neuron_information_v2``.
+        Full override — uses ``hierarchical_neuron_annotations`` with
+        progressive matching: exact → case-insensitive → substring.
+        Searches across ALL classification levels, not just cell_type.
         """
         logger.debug(
             "get_neurons_by_type(%s, region=%s) on %s",
@@ -1430,10 +2385,11 @@ class FlyWireBackend(CAVEBackend):
 
         try:
             hier_df = self._get_hierarchy_df()
-            matches = hier_df[
-                (hier_df["classification_system"] == "cell_type")
-                & (hier_df["cell_type"] == cell_type)
-            ]
+            matches, strategy, match_warnings = self._find_matching_root_ids(
+                hier_df, cell_type,
+            )
+            warnings.extend(match_warnings)
+
             if matches.empty:
                 return {
                     "dataset": self.dataset_name,
@@ -1444,15 +2400,24 @@ class FlyWireBackend(CAVEBackend):
                     "neurons_df": empty_neurons_df,
                 }
 
+            # Deduplicate by pt_root_id (a neuron may appear at multiple levels)
+            unique_root_ids = matches["pt_root_id"].unique()
+
             rows: list[dict] = []
-            for _, row in matches.iterrows():
-                rid = row.get("pt_root_id")
+            for rid in unique_root_ids:
                 if rid is None:
                     continue
                 hierarchy = self._get_flywire_hierarchy(int(rid))
+                # Use the finest hierarchy level as the reported cell_type
+                reported_type = cell_type
+                if hierarchy:
+                    for level in reversed(HIERARCHY_LEVELS):
+                        if level in hierarchy:
+                            reported_type = hierarchy[level]
+                            break
                 rows.append({
                     "neuron_id": int(rid),
-                    "cell_type": cell_type,
+                    "cell_type": reported_type,
                     "cell_class": (
                         hierarchy.get("cell_class") if hierarchy else None
                     ),

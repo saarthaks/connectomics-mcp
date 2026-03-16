@@ -516,6 +516,101 @@ class NeuPrintBackend(ConnectomeBackend):
             "region_df": region_df,
         }
 
+    def get_cell_type_taxonomy(self) -> dict[str, Any]:
+        """Return the neuPrint cell type taxonomy.
+
+        neuPrint has a flat namespace (type, instance). Returns the
+        top types by neuron count.
+        """
+        logger.debug("get_cell_type_taxonomy() on %s", self.dataset_name)
+
+        warnings: list[str] = []
+
+        try:
+            _ = self.client
+            cypher = (
+                "MATCH (n:Neuron) WHERE n.type IS NOT NULL "
+                "RETURN n.type AS cell_type, count(n) AS n_neurons "
+                "ORDER BY n_neurons DESC LIMIT 50"
+            )
+            result_df = self.client.fetch_custom(cypher)
+        except Exception as e:
+            logger.warning("Failed to fetch taxonomy: %s", e)
+            return {
+                "dataset": self.dataset_name,
+                "n_total_neurons": 0,
+                "levels": [],
+                "example_lineages": [],
+                "warnings": [f"Failed to fetch taxonomy: {e}"],
+            }
+
+        values = []
+        if not result_df.empty:
+            for _, row in result_df.iterrows():
+                ct = row.get("cell_type")
+                if ct and pd.notna(ct):
+                    values.append({
+                        "name": str(ct),
+                        "n_neurons": int(row["n_neurons"]),
+                    })
+
+        return {
+            "dataset": self.dataset_name,
+            "n_total_neurons": sum(v["n_neurons"] for v in values),
+            "levels": [
+                {"level_name": "type", "values": values},
+            ],
+            "example_lineages": [],
+            "warnings": warnings,
+        }
+
+    def search_cell_types(self, query: str) -> dict[str, Any]:
+        """Search for cell types matching a query string in neuPrint.
+
+        Uses a Cypher query to find all types containing the query
+        string (case-insensitive substring match).
+        """
+        logger.debug(
+            "search_cell_types(%s) on %s", query, self.dataset_name,
+        )
+
+        warnings: list[str] = []
+
+        try:
+            _ = self.client
+            cypher = (
+                f"MATCH (n:Neuron) WHERE toLower(n.type) CONTAINS toLower('{query}') "
+                f"RETURN n.type AS cell_type, count(n) AS n_neurons "
+                f"ORDER BY n_neurons DESC LIMIT 50"
+            )
+            result_df = self.client.fetch_custom(cypher)
+        except Exception as e:
+            logger.warning("Failed to search cell types: %s", e)
+            return {
+                "dataset": self.dataset_name,
+                "query": query,
+                "matches": [],
+                "warnings": [f"Failed to search cell types: {e}"],
+            }
+
+        matches = []
+        if not result_df.empty:
+            for _, row in result_df.iterrows():
+                ct = row.get("cell_type")
+                if ct and pd.notna(ct):
+                    matches.append({
+                        "cell_type": str(ct),
+                        "classification_level": "type",
+                        "n_neurons": int(row["n_neurons"]),
+                    })
+
+        return {
+            "dataset": self.dataset_name,
+            "query": query,
+            "matches": matches,
+            "warnings": warnings,
+        }
+
     def get_neurons_by_type(
         self, cell_type: str, region: str | None = None
     ) -> dict[str, Any]:

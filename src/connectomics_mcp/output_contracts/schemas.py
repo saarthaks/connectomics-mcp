@@ -87,6 +87,42 @@ class ConnectivityResponse(BaseModel):
     warnings: list[str] = []
 
 
+class CellTypeMatch(BaseModel):
+    """A single cell type match from a search query."""
+
+    cell_type: str
+    classification_level: str | None = None
+    n_neurons: int = 0
+
+
+class CellTypeSearchResponse(BaseModel):
+    """Scalar-only — cell type discovery tool."""
+
+    dataset: str
+    query: str
+    n_matches: int = 0
+    matches: list[CellTypeMatch] = []
+    taxonomy_hints: list[str] = []
+    warnings: list[str] = []
+
+
+class TaxonomyLevel(BaseModel):
+    """A single level in the cell type taxonomy."""
+
+    level_name: str
+    values: list[dict] = []
+
+
+class CellTypeTaxonomyResponse(BaseModel):
+    """Scalar-only — cell type taxonomy/hierarchy for a dataset."""
+
+    dataset: str
+    n_total_neurons: int = 0
+    levels: list[TaxonomyLevel] = []
+    example_lineages: list[dict] = []
+    warnings: list[str] = []
+
+
 class NeuronsByTypeResponse(BaseModel):
     """Artifact-producing — full neuron list saved to Parquet."""
 
@@ -194,6 +230,90 @@ class AnnotationTableResponse(BaseModel):
     table_name: str
     n_total: int = 0
     schema_description: str = ""
+    artifact_manifest: ArtifactManifest | None = None
+    warnings: list[str] = []
+
+
+# ---------------------------------------------------------------------------
+# MICrONS-specific schemas
+# ---------------------------------------------------------------------------
+
+
+class CoregistrationResponse(BaseModel):
+    """Artifact-producing — EM-to-functional imaging unit mappings."""
+
+    neuron_id: int
+    query_by: str
+    dataset: str
+    n_units: int = 0
+    score_distribution: dict = {}
+    sessions: list[int] = []
+    artifact_manifest: ArtifactManifest | None = None
+    warnings: list[str] = []
+
+
+class FunctionalPropertiesResponse(BaseModel):
+    """Artifact-producing — digital twin tuning properties."""
+
+    neuron_id: int
+    query_by: str
+    dataset: str
+    coregistration_source: str
+    n_units: int = 0
+    ori_selectivity_distribution: dict = {}
+    dir_selectivity_distribution: dict = {}
+    artifact_manifest: ArtifactManifest | None = None
+    warnings: list[str] = []
+
+
+class SynapseTargetsResponse(BaseModel):
+    """Artifact-producing — per-synapse structural target classification."""
+
+    neuron_id: int
+    dataset: str
+    direction: str
+    n_synapses: int = 0
+    target_distribution: dict = {}
+    artifact_manifest: ArtifactManifest | None = None
+    warnings: list[str] = []
+
+
+class MultiInputSpinesResponse(BaseModel):
+    """Artifact-producing — multi-input spine predictions (deprecated)."""
+
+    neuron_id: int
+    dataset: str
+    direction: str
+    n_synapses: int = 0
+    n_spine_groups: int = 0
+    target_distribution: dict = {}
+    artifact_manifest: ArtifactManifest | None = None
+    warnings: list[str] = []
+
+
+class CellMtypesResponse(BaseModel):
+    """Artifact-producing — morphological cell type classifications."""
+
+    dataset: str
+    query_neuron_id: int | None = None
+    query_by: str | None = None
+    query_cell_type: str | None = None
+    n_total: int = 0
+    classification_system_distribution: dict = {}
+    cell_type_distribution: dict = {}
+    artifact_manifest: ArtifactManifest | None = None
+    warnings: list[str] = []
+
+
+class FunctionalAreaResponse(BaseModel):
+    """Artifact-producing — brain area assignments per nucleus."""
+
+    dataset: str
+    query_neuron_id: int | None = None
+    query_by: str | None = None
+    query_area: str | None = None
+    n_total: int = 0
+    area_distribution: dict = {}
     artifact_manifest: ArtifactManifest | None = None
     warnings: list[str] = []
 

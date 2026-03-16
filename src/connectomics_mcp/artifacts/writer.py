@@ -40,11 +40,14 @@ def _build_filename(
     neuron_id: int | str | None,
     materialization_version: int | None,
     timestamp: str,
+    extra_key: str | None = None,
 ) -> str:
     """Build the artifact filename following the naming convention."""
     parts = [dataset, tool]
     if neuron_id is not None:
         parts.append(str(neuron_id))
+    if extra_key is not None:
+        parts.append(extra_key)
     mat = f"v{materialization_version}" if materialization_version is not None else "vNone"
     parts.append(mat)
     parts.append(timestamp)
@@ -56,12 +59,15 @@ def _find_cached(
     dataset: str,
     neuron_id: int | str | None,
     materialization_version: int | None,
+    extra_key: str | None = None,
 ) -> Path | None:
     """Find a cached artifact matching the query that is less than 1 hour old."""
     out_dir = _artifact_dir()
     prefix_parts = [dataset, tool]
     if neuron_id is not None:
         prefix_parts.append(str(neuron_id))
+    if extra_key is not None:
+        prefix_parts.append(extra_key)
     mat = f"v{materialization_version}" if materialization_version is not None else "vNone"
     prefix_parts.append(mat)
     prefix = "_".join(prefix_parts) + "_"
@@ -89,6 +95,7 @@ def save_artifact(
     dataset: str,
     neuron_id: int | str | None = None,
     materialization_version: int | None = None,
+    extra_key: str | None = None,
 ) -> ArtifactManifest:
     """Save a DataFrame as a Parquet artifact and return a manifest.
 
@@ -104,6 +111,9 @@ def save_artifact(
         Neuron identifier, if applicable.
     materialization_version : int | None
         CAVE materialization version, if applicable.
+    extra_key : str | None
+        Additional cache key component (e.g. table name) to
+        disambiguate queries that share the same tool/dataset/neuron_id.
 
     Returns
     -------
@@ -111,7 +121,7 @@ def save_artifact(
         Manifest pointing to the saved (or cached) Parquet file.
     """
     # Check cache first
-    cached = _find_cached(tool, dataset, neuron_id, materialization_version)
+    cached = _find_cached(tool, dataset, neuron_id, materialization_version, extra_key)
     if cached is not None:
         logger.debug("Cache hit for %s/%s/%s", tool, dataset, neuron_id)
         cached_df = pd.read_parquet(cached)
@@ -131,7 +141,9 @@ def save_artifact(
     # Write new artifact
     now = datetime.now(tz=timezone.utc)
     ts = now.strftime("%Y-%m-%dT%H:%M:%S")
-    filename = _build_filename(tool, dataset, neuron_id, materialization_version, ts)
+    filename = _build_filename(
+        tool, dataset, neuron_id, materialization_version, ts, extra_key
+    )
     out_path = _artifact_dir() / filename
 
     df.to_parquet(out_path, engine="pyarrow", compression="snappy", index=False)

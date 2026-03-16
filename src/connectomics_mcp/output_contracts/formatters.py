@@ -12,10 +12,19 @@ from connectomics_mcp.artifacts.writer import save_artifact
 from connectomics_mcp.neuroglancer.url_builder import build_neuroglancer_url
 from connectomics_mcp.output_contracts.schemas import (
     AnnotationTableResponse,
+    CellMtypesResponse,
+    CellTypeMatch,
+    CellTypeSearchResponse,
+    CellTypeTaxonomyResponse,
+    TaxonomyLevel,
     CompartmentStats,
     ConnectivityResponse,
+    CoregistrationResponse,
     CypherQueryResponse,
     EditHistoryResponse,
+    FunctionalAreaResponse,
+    FunctionalPropertiesResponse,
+    MultiInputSpinesResponse,
     NeuronInfoResponse,
     NeuroglancerUrlResponse,
     NeuronsByTypeResponse,
@@ -27,6 +36,7 @@ from connectomics_mcp.output_contracts.schemas import (
     RootIdValidationResponse,
     RootIdValidationResult,
     SynapseCompartmentResponse,
+    SynapseTargetsResponse,
     SynapticPartnerSample,
 )
 
@@ -369,6 +379,63 @@ def format_region_connectivity(
     )
 
 
+def format_cell_type_search(
+    raw: dict[str, Any], dataset: str
+) -> CellTypeSearchResponse:
+    """Convert raw backend cell type search results to CellTypeSearchResponse.
+
+    Parameters
+    ----------
+    raw : dict
+        Raw dict from backend's search_cell_types method.
+    dataset : str
+        Dataset name.
+
+    Returns
+    -------
+    CellTypeSearchResponse
+        Validated, serializable response.
+    """
+    matches = [
+        CellTypeMatch(
+            cell_type=m["cell_type"],
+            classification_level=m.get("classification_level"),
+            n_neurons=m.get("n_neurons", 0),
+        )
+        for m in raw.get("matches", [])
+    ]
+
+    return CellTypeSearchResponse(
+        dataset=dataset,
+        query=raw["query"],
+        n_matches=len(matches),
+        matches=matches,
+        taxonomy_hints=raw.get("taxonomy_hints", []),
+        warnings=raw.get("warnings", []),
+    )
+
+
+def format_cell_type_taxonomy(
+    raw: dict[str, Any], dataset: str
+) -> CellTypeTaxonomyResponse:
+    """Convert raw backend taxonomy data to CellTypeTaxonomyResponse."""
+    levels = [
+        TaxonomyLevel(
+            level_name=lv["level_name"],
+            values=lv.get("values", []),
+        )
+        for lv in raw.get("levels", [])
+    ]
+
+    return CellTypeTaxonomyResponse(
+        dataset=dataset,
+        n_total_neurons=raw.get("n_total_neurons", 0),
+        levels=levels,
+        example_lineages=raw.get("example_lineages", []),
+        warnings=raw.get("warnings", []),
+    )
+
+
 def format_neurons_by_type(
     raw: dict[str, Any], dataset: str
 ) -> NeuronsByTypeResponse:
@@ -451,6 +518,7 @@ def format_annotation_table(
         dataset=dataset,
         neuron_id=None,
         materialization_version=mat_version,
+        extra_key=raw["table_name"],
     )
 
     return AnnotationTableResponse(
@@ -624,5 +692,226 @@ def format_synapse_compartments(
         direction=raw.get("direction", "input"),
         compartments=compartments,
         n_total_synapses=raw.get("n_total_synapses", 0),
+        warnings=raw.get("warnings", []),
+    )
+
+
+# ---------------------------------------------------------------------------
+# MICrONS-specific formatters
+# ---------------------------------------------------------------------------
+
+
+def format_coregistration(
+    raw: dict[str, Any], dataset: str
+) -> CoregistrationResponse:
+    """Convert raw coregistration data to CoregistrationResponse."""
+    table_df: pd.DataFrame = raw["table_df"]
+    mat_version = raw.get("materialization_version")
+
+    manifest = save_artifact(
+        df=table_df,
+        tool="coregistration",
+        dataset=dataset,
+        neuron_id=raw["neuron_id"],
+        materialization_version=mat_version,
+        extra_key=raw["table_name"],
+    )
+
+    score_dist = (
+        _weight_distribution(table_df["score"])
+        if not table_df.empty and "score" in table_df.columns
+        else {}
+    )
+    sessions = (
+        sorted(int(s) for s in table_df["session"].dropna().unique())
+        if not table_df.empty and "session" in table_df.columns
+        else []
+    )
+
+    return CoregistrationResponse(
+        neuron_id=raw["neuron_id"],
+        query_by=raw["by"],
+        dataset=dataset,
+        n_units=len(table_df),
+        score_distribution=score_dist,
+        sessions=sessions,
+        artifact_manifest=manifest,
+        warnings=raw.get("warnings", []),
+    )
+
+
+def format_functional_properties(
+    raw: dict[str, Any], dataset: str
+) -> FunctionalPropertiesResponse:
+    """Convert raw functional properties data to FunctionalPropertiesResponse."""
+    table_df: pd.DataFrame = raw["table_df"]
+    mat_version = raw.get("materialization_version")
+
+    manifest = save_artifact(
+        df=table_df,
+        tool="functional_properties",
+        dataset=dataset,
+        neuron_id=raw["neuron_id"],
+        materialization_version=mat_version,
+        extra_key=raw["table_name"],
+    )
+
+    ori_dist = (
+        _weight_distribution(table_df["OSI"])
+        if not table_df.empty and "OSI" in table_df.columns
+        else {}
+    )
+    dir_dist = (
+        _weight_distribution(table_df["DSI"])
+        if not table_df.empty and "DSI" in table_df.columns
+        else {}
+    )
+
+    return FunctionalPropertiesResponse(
+        neuron_id=raw["neuron_id"],
+        query_by=raw["by"],
+        dataset=dataset,
+        coregistration_source=raw["coregistration_source"],
+        n_units=len(table_df),
+        ori_selectivity_distribution=ori_dist,
+        dir_selectivity_distribution=dir_dist,
+        artifact_manifest=manifest,
+        warnings=raw.get("warnings", []),
+    )
+
+
+def _tag_distribution(df: pd.DataFrame, col: str) -> dict[str, int]:
+    """Compute value counts for a string column, returning {value: count}."""
+    if df.empty or col not in df.columns:
+        return {}
+    counts = df[col].dropna().value_counts()
+    return {str(k): int(v) for k, v in counts.items()}
+
+
+def format_synapse_targets(
+    raw: dict[str, Any], dataset: str
+) -> SynapseTargetsResponse:
+    """Convert raw synapse target data to SynapseTargetsResponse."""
+    table_df: pd.DataFrame = raw["table_df"]
+    mat_version = raw.get("materialization_version")
+
+    manifest = save_artifact(
+        df=table_df,
+        tool="synapse_targets",
+        dataset=dataset,
+        neuron_id=raw["neuron_id"],
+        materialization_version=mat_version,
+        extra_key=raw["table_name"],
+    )
+
+    return SynapseTargetsResponse(
+        neuron_id=raw["neuron_id"],
+        dataset=dataset,
+        direction=raw["direction"],
+        n_synapses=len(table_df),
+        target_distribution=_tag_distribution(table_df, "tag"),
+        artifact_manifest=manifest,
+        warnings=raw.get("warnings", []),
+    )
+
+
+def format_multi_input_spines(
+    raw: dict[str, Any], dataset: str
+) -> MultiInputSpinesResponse:
+    """Convert raw multi-input spine data to MultiInputSpinesResponse."""
+    table_df: pd.DataFrame = raw["table_df"]
+    mat_version = raw.get("materialization_version")
+
+    manifest = save_artifact(
+        df=table_df,
+        tool="multi_input_spines",
+        dataset=dataset,
+        neuron_id=raw["neuron_id"],
+        materialization_version=mat_version,
+        extra_key=raw["table_name"],
+    )
+
+    n_spine_groups = (
+        int(table_df["group_id"].nunique())
+        if not table_df.empty and "group_id" in table_df.columns
+        else 0
+    )
+
+    return MultiInputSpinesResponse(
+        neuron_id=raw["neuron_id"],
+        dataset=dataset,
+        direction=raw["direction"],
+        n_synapses=len(table_df),
+        n_spine_groups=n_spine_groups,
+        target_distribution=_tag_distribution(table_df, "tag"),
+        artifact_manifest=manifest,
+        warnings=raw.get("warnings", []),
+    )
+
+
+def format_cell_mtypes(
+    raw: dict[str, Any], dataset: str
+) -> CellMtypesResponse:
+    """Convert raw cell mtype data to CellMtypesResponse."""
+    table_df: pd.DataFrame = raw["table_df"]
+    mat_version = raw.get("materialization_version")
+
+    manifest = save_artifact(
+        df=table_df,
+        tool="cell_mtypes",
+        dataset=dataset,
+        neuron_id=raw.get("neuron_id"),
+        materialization_version=mat_version,
+        extra_key=raw["table_name"],
+    )
+
+    # Try both possible column names for the classification system
+    cls_col = (
+        "classification_system"
+        if "classification_system" in table_df.columns
+        else "classification-system"
+        if "classification-system" in table_df.columns
+        else None
+    )
+
+    return CellMtypesResponse(
+        dataset=dataset,
+        query_neuron_id=raw.get("neuron_id"),
+        query_by=raw.get("by"),
+        query_cell_type=raw.get("cell_type"),
+        n_total=len(table_df),
+        classification_system_distribution=(
+            _tag_distribution(table_df, cls_col) if cls_col else {}
+        ),
+        cell_type_distribution=_tag_distribution(table_df, "cell_type"),
+        artifact_manifest=manifest,
+        warnings=raw.get("warnings", []),
+    )
+
+
+def format_functional_area(
+    raw: dict[str, Any], dataset: str
+) -> FunctionalAreaResponse:
+    """Convert raw functional area data to FunctionalAreaResponse."""
+    table_df: pd.DataFrame = raw["table_df"]
+    mat_version = raw.get("materialization_version")
+
+    manifest = save_artifact(
+        df=table_df,
+        tool="functional_area",
+        dataset=dataset,
+        neuron_id=raw.get("neuron_id"),
+        materialization_version=mat_version,
+        extra_key=raw["table_name"],
+    )
+
+    return FunctionalAreaResponse(
+        dataset=dataset,
+        query_neuron_id=raw.get("neuron_id"),
+        query_by=raw.get("by"),
+        query_area=raw.get("area"),
+        n_total=len(table_df),
+        area_distribution=_tag_distribution(table_df, "tag"),
+        artifact_manifest=manifest,
         warnings=raw.get("warnings", []),
     )

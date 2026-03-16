@@ -34,6 +34,8 @@ class TestServerSetup:
             "validate_root_ids",
             "get_proofreading_status",
             "build_neuroglancer_url",
+            "get_cell_type_taxonomy",
+            "search_cell_types",
             "get_neurons_by_type",
             "get_region_connectivity",
             "resolve_nucleus_ids",
