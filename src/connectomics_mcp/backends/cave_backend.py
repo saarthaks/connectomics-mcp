@@ -2135,7 +2135,7 @@ HIERARCHY_LEVELS = [
     "super_class", "cell_class", "cell_sub_class", "cell_type",
 ]
 
-_HIERARCHY_CACHE_TTL = 600  # 10 minutes
+_HIERARCHY_CACHE_TTL = 604800  # 7 days
 
 
 class FlyWireBackend(CAVEBackend):

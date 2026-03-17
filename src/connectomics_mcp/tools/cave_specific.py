@@ -534,37 +534,19 @@ def _check_bulk_cache(
     tool: str, dataset: str, extra_key: str, mat_version: int | None
 ) -> dict[str, Any] | None:
     """Check for a cached bulk artifact. Returns response dict or None."""
-    from connectomics_mcp.artifacts.writer import _find_cached
+    from connectomics_mcp.artifacts.writer import load_cached_artifact
 
-    cached_path = _find_cached(
+    result = load_cached_artifact(
         tool=tool,
         dataset=dataset,
         neuron_id=None,
         materialization_version=mat_version,
         extra_key=extra_key,
     )
-    if cached_path is None:
+    if result is None:
         return None
 
-    import pandas as pd
-    from datetime import datetime, timezone
-
-    from connectomics_mcp.artifacts.writer import _describe_columns
-    from connectomics_mcp.output_contracts.schemas import ArtifactManifest
-
-    cached_df = pd.read_parquet(cached_path)
-    manifest = ArtifactManifest(
-        artifact_path=str(cached_path),
-        n_rows=len(cached_df),
-        columns=list(cached_df.columns),
-        schema_description=_describe_columns(cached_df),
-        dataset=dataset,
-        query_timestamp=datetime.fromtimestamp(
-            cached_path.stat().st_mtime, tz=timezone.utc
-        ).isoformat(),
-        materialization_version=mat_version,
-        cache_hit=True,
-    )
+    cached_df, manifest = result
     return {"cached_df": cached_df, "manifest": manifest}
 
 

@@ -480,8 +480,8 @@ def get_bulk_connectivity(
     hash_input = f"{','.join(str(i) for i in sorted_ids)}:{direction}"
     root_ids_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:8]
 
-    # Cache pre-check — skip fetch if artifact exists
-    from connectomics_mcp.artifacts.writer import _find_cached
+    # Cache pre-check — skip fetch + staleness gate if artifact exists
+    from connectomics_mcp.artifacts.writer import load_cached_artifact
 
     mat_version = None
     try:
@@ -492,36 +492,19 @@ def get_bulk_connectivity(
     except Exception:
         mat_version = None
 
-    cached_path = _find_cached(
+    cached = load_cached_artifact(
         tool="bulk_connectivity",
         dataset=dataset,
         neuron_id=None,
         materialization_version=mat_version,
         extra_key=root_ids_hash,
     )
-    if cached_path is not None:
-        import pandas as pd
-        from datetime import datetime, timezone
-
+    if cached is not None:
         from connectomics_mcp.output_contracts.schemas import (
-            ArtifactManifest,
             BulkConnectivityResponse,
         )
-        from connectomics_mcp.artifacts.writer import _describe_columns
 
-        cached_df = pd.read_parquet(cached_path)
-        manifest = ArtifactManifest(
-            artifact_path=str(cached_path),
-            n_rows=len(cached_df),
-            columns=list(cached_df.columns),
-            schema_description=_describe_columns(cached_df),
-            dataset=dataset,
-            query_timestamp=datetime.fromtimestamp(
-                cached_path.stat().st_mtime, tz=timezone.utc
-            ).isoformat(),
-            materialization_version=mat_version,
-            cache_hit=True,
-        )
+        cached_df, manifest = cached
         total_syn = (
             int(cached_df["syn_count"].sum()) if not cached_df.empty else 0
         )
