@@ -10,6 +10,7 @@ from connectomics_mcp.exceptions import DatasetNotSupported, StaleRootIdError
 from connectomics_mcp.neuroglancer.url_builder import (
     NEUROGLANCER_CONFIGS,
     build_neuroglancer_url as _build_ngl_url,
+    get_layers_for_dataset,
 )
 from connectomics_mcp.output_contracts.formatters import (
     format_bulk_connectivity,
@@ -248,7 +249,7 @@ def build_neuroglancer_url_tool(
 
     url = _build_ngl_url(segment_ids, dataset, annotations, position)
 
-    layers = ["imagery", "segmentation"]
+    layers = get_layers_for_dataset(dataset)
     if annotations:
         layers.append("annotations")
 
