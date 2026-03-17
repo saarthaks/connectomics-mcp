@@ -136,6 +136,19 @@ class NeuronsByTypeResponse(BaseModel):
     warnings: list[str] = []
 
 
+class BulkConnectivityResponse(BaseModel):
+    """Artifact-producing — complete edge table saved to Parquet."""
+
+    dataset: str
+    n_root_ids: int = 0
+    direction: str = "both"
+    n_edges: int = 0
+    total_synapses: int = 0
+    cached: bool = False
+    artifact_manifest: ArtifactManifest | None = None
+    warnings: list[str] = []
+
+
 class RegionConnectivityResponse(BaseModel):
     """Artifact-producing — long-format region pairs saved to Parquet."""
 
@@ -314,6 +327,58 @@ class FunctionalAreaResponse(BaseModel):
     query_area: str | None = None
     n_total: int = 0
     area_distribution: dict = {}
+    artifact_manifest: ArtifactManifest | None = None
+    warnings: list[str] = []
+
+
+class BulkCoregistrationResponse(BaseModel):
+    """Artifact-producing — bulk coregistration for multiple neurons."""
+
+    dataset: str
+    n_root_ids: int = 0
+    n_units: int = 0
+    score_distribution: dict = {}
+    sessions: list[int] = []
+    cached: bool = False
+    artifact_manifest: ArtifactManifest | None = None
+    warnings: list[str] = []
+
+
+class BulkFunctionalPropertiesResponse(BaseModel):
+    """Artifact-producing — bulk functional properties for multiple neurons."""
+
+    dataset: str
+    n_root_ids: int = 0
+    coregistration_source: str = "auto_phase3"
+    n_units: int = 0
+    ori_selectivity_distribution: dict = {}
+    dir_selectivity_distribution: dict = {}
+    cached: bool = False
+    artifact_manifest: ArtifactManifest | None = None
+    warnings: list[str] = []
+
+
+class BulkSynapseTargetsResponse(BaseModel):
+    """Artifact-producing — bulk synapse targets for multiple neurons."""
+
+    dataset: str
+    n_root_ids: int = 0
+    direction: str = "post"
+    n_synapses: int = 0
+    target_distribution: dict = {}
+    cached: bool = False
+    artifact_manifest: ArtifactManifest | None = None
+    warnings: list[str] = []
+
+
+class BulkFunctionalAreaResponse(BaseModel):
+    """Artifact-producing — bulk functional area for multiple neurons."""
+
+    dataset: str
+    n_root_ids: int = 0
+    n_total: int = 0
+    area_distribution: dict = {}
+    cached: bool = False
     artifact_manifest: ArtifactManifest | None = None
     warnings: list[str] = []
 

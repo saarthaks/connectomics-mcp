@@ -207,6 +207,26 @@ class ConnectomeBackend(ABC):
         """
 
     @abstractmethod
+    def get_bulk_connectivity(
+        self, root_ids: list[int], direction: str = "both"
+    ) -> dict[str, Any]:
+        """Fetch connectivity for multiple neurons in bulk.
+
+        Parameters
+        ----------
+        root_ids : list[int]
+            Root IDs (CAVE) or body IDs (neuPrint) to query.
+        direction : str
+            "pre" (outgoing), "post" (incoming), or "both".
+
+        Returns
+        -------
+        dict
+            Keys: edges_df (columns: pre_root_id, post_root_id,
+            syn_count, neuropil), materialization_version, warnings.
+        """
+
+    @abstractmethod
     def get_synapse_compartments(
         self, neuron_id: int | str, direction: str = "input"
     ) -> dict[str, Any]:

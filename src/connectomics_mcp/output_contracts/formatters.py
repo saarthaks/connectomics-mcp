@@ -12,6 +12,11 @@ from connectomics_mcp.artifacts.writer import save_artifact
 from connectomics_mcp.neuroglancer.url_builder import build_neuroglancer_url
 from connectomics_mcp.output_contracts.schemas import (
     AnnotationTableResponse,
+    BulkCoregistrationResponse,
+    BulkConnectivityResponse,
+    BulkFunctionalAreaResponse,
+    BulkFunctionalPropertiesResponse,
+    BulkSynapseTargetsResponse,
     CellMtypesResponse,
     CellTypeMatch,
     CellTypeSearchResponse,
@@ -209,6 +214,54 @@ def format_connectivity(
         downstream_sample=downstream_sample,
         neuroglancer_url=ngl_url,
         neurotransmitter_distribution=nt_distribution,
+        artifact_manifest=manifest,
+        warnings=raw.get("warnings", []),
+    )
+
+
+def format_bulk_connectivity(
+    raw: dict[str, Any], dataset: str, extra_key: str
+) -> BulkConnectivityResponse:
+    """Convert raw bulk connectivity data to BulkConnectivityResponse.
+
+    Saves the complete edge DataFrame as a Parquet artifact and
+    returns a lightweight summary.
+
+    Parameters
+    ----------
+    raw : dict
+        Raw dict with key ``edges_df`` (a pd.DataFrame).
+    dataset : str
+        Dataset name.
+    extra_key : str
+        Content-addressable hash for artifact caching.
+
+    Returns
+    -------
+    BulkConnectivityResponse
+        Summary + artifact manifest for the full edge table.
+    """
+    edges_df: pd.DataFrame = raw["edges_df"]
+    mat_version = raw.get("materialization_version")
+
+    manifest = save_artifact(
+        df=edges_df,
+        tool="bulk_connectivity",
+        dataset=dataset,
+        neuron_id=None,
+        materialization_version=mat_version,
+        extra_key=extra_key,
+    )
+
+    total_synapses = int(edges_df["syn_count"].sum()) if not edges_df.empty else 0
+
+    return BulkConnectivityResponse(
+        dataset=dataset,
+        n_root_ids=raw.get("n_root_ids", 0),
+        direction=raw.get("direction", "both"),
+        n_edges=len(edges_df),
+        total_synapses=total_synapses,
+        cached=False,
         artifact_manifest=manifest,
         warnings=raw.get("warnings", []),
     )
@@ -910,6 +963,141 @@ def format_functional_area(
         query_neuron_id=raw.get("neuron_id"),
         query_by=raw.get("by"),
         query_area=raw.get("area"),
+        n_total=len(table_df),
+        area_distribution=_tag_distribution(table_df, "tag"),
+        artifact_manifest=manifest,
+        warnings=raw.get("warnings", []),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Bulk MICrONS formatters
+# ---------------------------------------------------------------------------
+
+
+def format_bulk_coregistration(
+    raw: dict[str, Any], dataset: str, extra_key: str
+) -> BulkCoregistrationResponse:
+    """Format bulk coregistration data into BulkCoregistrationResponse."""
+    table_df: pd.DataFrame = raw["table_df"]
+    mat_version = raw.get("materialization_version")
+
+    manifest = save_artifact(
+        df=table_df,
+        tool="bulk_coregistration",
+        dataset=dataset,
+        neuron_id=None,
+        materialization_version=mat_version,
+        extra_key=extra_key,
+    )
+
+    score_dist = (
+        _weight_distribution(table_df["score"])
+        if not table_df.empty and "score" in table_df.columns
+        else {}
+    )
+    sessions = (
+        sorted(int(s) for s in table_df["session"].dropna().unique())
+        if not table_df.empty and "session" in table_df.columns
+        else []
+    )
+
+    return BulkCoregistrationResponse(
+        dataset=dataset,
+        n_root_ids=raw.get("n_root_ids", 0),
+        n_units=len(table_df),
+        score_distribution=score_dist,
+        sessions=sessions,
+        artifact_manifest=manifest,
+        warnings=raw.get("warnings", []),
+    )
+
+
+def format_bulk_functional_properties(
+    raw: dict[str, Any], dataset: str, extra_key: str
+) -> BulkFunctionalPropertiesResponse:
+    """Format bulk functional properties into BulkFunctionalPropertiesResponse."""
+    table_df: pd.DataFrame = raw["table_df"]
+    mat_version = raw.get("materialization_version")
+
+    manifest = save_artifact(
+        df=table_df,
+        tool="bulk_functional_properties",
+        dataset=dataset,
+        neuron_id=None,
+        materialization_version=mat_version,
+        extra_key=extra_key,
+    )
+
+    ori_dist = (
+        _weight_distribution(table_df["OSI"])
+        if not table_df.empty and "OSI" in table_df.columns
+        else {}
+    )
+    dir_dist = (
+        _weight_distribution(table_df["DSI"])
+        if not table_df.empty and "DSI" in table_df.columns
+        else {}
+    )
+
+    return BulkFunctionalPropertiesResponse(
+        dataset=dataset,
+        n_root_ids=raw.get("n_root_ids", 0),
+        coregistration_source=raw.get("coregistration_source", "auto_phase3"),
+        n_units=len(table_df),
+        ori_selectivity_distribution=ori_dist,
+        dir_selectivity_distribution=dir_dist,
+        artifact_manifest=manifest,
+        warnings=raw.get("warnings", []),
+    )
+
+
+def format_bulk_synapse_targets(
+    raw: dict[str, Any], dataset: str, extra_key: str
+) -> BulkSynapseTargetsResponse:
+    """Format bulk synapse targets into BulkSynapseTargetsResponse."""
+    table_df: pd.DataFrame = raw["table_df"]
+    mat_version = raw.get("materialization_version")
+
+    manifest = save_artifact(
+        df=table_df,
+        tool="bulk_synapse_targets",
+        dataset=dataset,
+        neuron_id=None,
+        materialization_version=mat_version,
+        extra_key=extra_key,
+    )
+
+    return BulkSynapseTargetsResponse(
+        dataset=dataset,
+        n_root_ids=raw.get("n_root_ids", 0),
+        direction=raw.get("direction", "post"),
+        n_synapses=len(table_df),
+        target_distribution=_tag_distribution(table_df, "tag"),
+        artifact_manifest=manifest,
+        warnings=raw.get("warnings", []),
+    )
+
+
+def format_bulk_functional_area(
+    raw: dict[str, Any], dataset: str, extra_key: str
+) -> BulkFunctionalAreaResponse:
+    """Format bulk functional area into BulkFunctionalAreaResponse."""
+    table_df: pd.DataFrame = raw["table_df"]
+    mat_version = raw.get("materialization_version")
+
+    manifest = save_artifact(
+        df=table_df,
+        tool="bulk_functional_area",
+        dataset=dataset,
+        neuron_id=None,
+        materialization_version=mat_version,
+        extra_key=extra_key,
+    )
+
+    return BulkFunctionalAreaResponse(
+        dataset=dataset,
+        n_root_ids=raw.get("n_root_ids", 0),
         n_total=len(table_df),
         area_distribution=_tag_distribution(table_df, "tag"),
         artifact_manifest=manifest,

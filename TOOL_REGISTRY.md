@@ -21,6 +21,7 @@ This file is the source of truth for what's built, what's in progress, and what'
 | `get_neurons_by_type` | ✅ 2026-03-10 | minnie65, hemibrain, flywire (mocked) | `NeuronsByTypeResponse` + `ArtifactManifest` | Artifact-first: full neuron list Parquet, type/region distributions. FlyWire: progressive matching (exact → cross-level → case-insensitive → substring) across all hierarchy levels. Suggests `search_cell_types()` when 0 results. |
 | `get_region_connectivity` | ✅ 2026-03-10 | minnie65, hemibrain (mocked) | `RegionConnectivityResponse` + `ArtifactManifest` | Artifact-first: long-format region pairs, optional source/target region filters |
 | `build_neuroglancer_url` | ✅ 2026-03-10 | minnie65, hemibrain (mocked) | `NeuroglancerUrlResponse` | Scalar-only, wraps existing URL builder as MCP tool |
+| `get_bulk_connectivity` | ✅ 2026-03-16 | minnie65, hemibrain (mocked) | `BulkConnectivityResponse` + `ArtifactManifest` | Artifact-first: bulk edge table for multiple neurons. Batched (200 IDs, 0.5s sleep). Content-addressable cache via sha256(sorted_ids:direction). CAVE: staleness gate raises ValueError listing all stale IDs. Columns: pre_root_id, post_root_id, syn_count, neuropil. |
 | `validate_root_ids` | ✅ 2026-03-10 | minnie65, hemibrain (mocked) | `RootIdValidationResponse` | Scalar-only; CAVE checks currency + suggests replacements; neuPrint returns all current |
 
 ---
@@ -40,6 +41,10 @@ This file is the source of truth for what's built, what's in progress, and what'
 | `get_multi_input_spines` | ✅ 2026-03-16 | minnie65 (mocked) | `MultiInputSpinesResponse` + `ArtifactManifest` | MICrONS-only. DEPRECATED — prefer `get_synapse_targets`. Spines with >1 input, grouped by `group_id`. |
 | `get_cell_mtypes` | ✅ 2026-03-16 | minnie65 (mocked + live) | `CellMtypesResponse` + `ArtifactManifest` | MICrONS-only. 24 morphological types (L2a-L6wm, PTC/DTC/STC/ITC). Table: `aibs_metamodel_mtypes_v661_v2`. `classification_system` values: `excitatory_neuron`/`inhibitory_neuron`. |
 | `get_functional_area` | ✅ 2026-03-16 | minnie65 (mocked + live) | `FunctionalAreaResponse` + `ArtifactManifest` | MICrONS-only. Brain area labels: V1, AL, RL, LM. `value` = distance to boundary (μm). Table: `nucleus_functional_area_assignment`. |
+| `get_bulk_coregistration` | ✅ 2026-03-16 | minnie65 (mocked) | `BulkCoregistrationResponse` + `ArtifactManifest` | MICrONS-only. Bulk version of `get_coregistration`. Batched content-aware API (200 IDs, 0.5s sleep). Content-addressable cache. Staleness gate. |
+| `get_bulk_functional_properties` | ✅ 2026-03-16 | minnie65 (mocked) | `BulkFunctionalPropertiesResponse` + `ArtifactManifest` | MICrONS-only. Bulk version of `get_functional_properties`. Supports `coregistration_source` param. |
+| `get_bulk_synapse_targets` | ✅ 2026-03-16 | minnie65 (mocked) | `BulkSynapseTargetsResponse` + `ArtifactManifest` | MICrONS-only. Bulk version of `get_synapse_targets`. Supports `direction` param. |
+| `get_bulk_functional_area` | ✅ 2026-03-16 | minnie65 (mocked) | `BulkFunctionalAreaResponse` + `ArtifactManifest` | MICrONS-only. Bulk version of `get_functional_area`. |
 
 ---
 
@@ -93,6 +98,7 @@ See `SCHEMA_REFERENCE.md` for verified column names per table per dataset.
 | `ArtifactManifest` | All artifact-producing tools | Shared type |
 | `NeuronInfoResponse` | `get_neuron_info`, `get_neuron_at_timepoint` | No |
 | `SynapticPartnerSample` | `ConnectivityResponse` (3-item sample) | No |
+| `BulkConnectivityResponse` | `get_bulk_connectivity` | Yes |
 | `ConnectivityResponse` | `get_connectivity` | Yes |
 | `CellTypeTaxonomyResponse` | `get_cell_type_taxonomy` | No |
 | `TaxonomyLevel` | `CellTypeTaxonomyResponse` (per-level entry) | No |
@@ -114,6 +120,10 @@ See `SCHEMA_REFERENCE.md` for verified column names per table per dataset.
 | `MultiInputSpinesResponse` | `get_multi_input_spines` | Yes |
 | `CellMtypesResponse` | `get_cell_mtypes` | Yes |
 | `FunctionalAreaResponse` | `get_functional_area` | Yes |
+| `BulkCoregistrationResponse` | `get_bulk_coregistration` | Yes |
+| `BulkFunctionalPropertiesResponse` | `get_bulk_functional_properties` | Yes |
+| `BulkSynapseTargetsResponse` | `get_bulk_synapse_targets` | Yes |
+| `BulkFunctionalAreaResponse` | `get_bulk_functional_area` | Yes |
 | `CypherQueryResponse` | `fetch_cypher` | Yes |
 | `SynapseCompartmentResponse` | `get_synapse_compartments` | No |
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any
 
@@ -11,6 +12,7 @@ from connectomics_mcp.neuroglancer.url_builder import (
     build_neuroglancer_url as _build_ngl_url,
 )
 from connectomics_mcp.output_contracts.formatters import (
+    format_bulk_connectivity,
     format_cell_type_search,
     format_cell_type_taxonomy,
     format_connectivity,
@@ -210,8 +212,13 @@ def build_neuroglancer_url_tool(
     segment_ids: list[int | str],
     dataset: str,
     annotations: list[dict] | None = None,
+    position: list[float] | None = None,
 ) -> dict[str, Any]:
-    """Build a Neuroglancer URL for the given segments.
+    """Build a Neuroglancer URL for visualizing neuron segments.
+
+    Constructs a fully encoded Neuroglancer URL with EM and
+    segmentation layers, with the specified segments selected.
+    Optionally includes point annotations.
 
     Parameters
     ----------
@@ -221,12 +228,15 @@ def build_neuroglancer_url_tool(
         Dataset to use. Supported: "minnie65", "flywire",
         "hemibrain".
     annotations : list[dict], optional
-        Point annotations to overlay.
+        Point annotations to overlay as an annotation layer.
+    position : list[float], optional
+        3D position [x, y, z] in nanometers to center the view on.
+        If not provided, the viewer opens at its default position.
 
     Returns
     -------
     dict
-        NeuroglancerUrlResponse as a dict with keys: url, dataset,
+        NeuroglancerUrlResponse with keys: url, dataset,
         n_segments, layers_included, coordinate_space.
 
     Raises
@@ -236,9 +246,9 @@ def build_neuroglancer_url_tool(
     """
     check_capability(dataset, "universal")
 
-    url = _build_ngl_url(segment_ids, dataset, annotations)
+    url = _build_ngl_url(segment_ids, dataset, annotations, position)
 
-    layers = ["em", "segmentation"]
+    layers = ["imagery", "segmentation"]
     if annotations:
         layers.append("annotations")
 
@@ -416,4 +426,149 @@ def get_region_connectivity(
     )
 
     response = format_region_connectivity(raw, dataset)
+    return response.model_dump()
+
+
+def get_bulk_connectivity(
+    root_ids: list[int],
+    dataset: str,
+    direction: str = "both",
+) -> dict[str, Any]:
+    """Get synaptic connectivity for multiple neurons in bulk.
+
+    Fetches all connections involving the given root IDs and saves
+    the complete edge table as a single Parquet artifact. This is
+    far more efficient than calling ``get_connectivity`` per neuron
+    when analyzing circuit motifs among a population.
+
+    The artifact has columns: ``pre_root_id``, ``post_root_id``,
+    ``syn_count``, ``neuropil``. For CAVE datasets ``neuropil`` is
+    None; for neuPrint it contains the ROI string.
+
+    Parameters
+    ----------
+    root_ids : list[int]
+        Neuron identifiers to query. All must be current (CAVE) or
+        valid body IDs (neuPrint).
+    dataset : str
+        Dataset to query. Supported: "minnie65", "flywire",
+        "hemibrain".
+    direction : str
+        "pre" (outgoing from these neurons), "post" (incoming to
+        these neurons), or "both" (default).
+
+    Returns
+    -------
+    dict
+        BulkConnectivityResponse as a dict containing n_edges,
+        total_synapses, and artifact_manifest with the path to
+        the full Parquet edge table.
+
+    Raises
+    ------
+    DatasetNotSupported
+        If the dataset is unknown or does not support universal tools.
+    ValueError
+        If any root ID is stale (CAVE datasets).
+    """
+    check_capability(dataset, "universal")
+    backend = get_backend(dataset)
+
+    # Compute content-addressable cache key
+    sorted_ids = sorted(root_ids)
+    hash_input = f"{','.join(str(i) for i in sorted_ids)}:{direction}"
+    root_ids_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:8]
+
+    # Cache pre-check — skip fetch if artifact exists
+    from connectomics_mcp.artifacts.writer import _find_cached
+
+    mat_version = None
+    try:
+        mat_version = getattr(
+            getattr(backend, "client", None), "materialize", None
+        )
+        mat_version = mat_version.version if mat_version is not None else None
+    except Exception:
+        mat_version = None
+
+    cached_path = _find_cached(
+        tool="bulk_connectivity",
+        dataset=dataset,
+        neuron_id=None,
+        materialization_version=mat_version,
+        extra_key=root_ids_hash,
+    )
+    if cached_path is not None:
+        import pandas as pd
+        from datetime import datetime, timezone
+
+        from connectomics_mcp.output_contracts.schemas import (
+            ArtifactManifest,
+            BulkConnectivityResponse,
+        )
+        from connectomics_mcp.artifacts.writer import _describe_columns
+
+        cached_df = pd.read_parquet(cached_path)
+        manifest = ArtifactManifest(
+            artifact_path=str(cached_path),
+            n_rows=len(cached_df),
+            columns=list(cached_df.columns),
+            schema_description=_describe_columns(cached_df),
+            dataset=dataset,
+            query_timestamp=datetime.fromtimestamp(
+                cached_path.stat().st_mtime, tz=timezone.utc
+            ).isoformat(),
+            materialization_version=mat_version,
+            cache_hit=True,
+        )
+        total_syn = (
+            int(cached_df["syn_count"].sum()) if not cached_df.empty else 0
+        )
+        return BulkConnectivityResponse(
+            dataset=dataset,
+            n_root_ids=len(root_ids),
+            direction=direction,
+            n_edges=len(cached_df),
+            total_synapses=total_syn,
+            cached=True,
+            artifact_manifest=manifest,
+            warnings=[],
+        ).model_dump()
+
+    # Staleness gate (CAVE only)
+    if DATASETS[dataset]["backend"] == "cave":
+        raw_validation = backend.validate_root_ids(sorted_ids)
+        stale = [
+            r["root_id"]
+            for r in raw_validation["results"]
+            if not r["is_current"]
+        ]
+        if stale:
+            raise ValueError(
+                f"Stale root IDs: {stale}. Use validate_root_ids() to get "
+                f"current IDs before calling get_bulk_connectivity()."
+            )
+
+    # Handle empty input
+    if not root_ids:
+        import pandas as pd
+
+        raw = {
+            "edges_df": pd.DataFrame(
+                columns=["pre_root_id", "post_root_id", "syn_count", "neuropil"]
+            ),
+            "materialization_version": mat_version,
+            "warnings": [],
+            "n_root_ids": 0,
+            "direction": direction,
+        }
+        response = format_bulk_connectivity(raw, dataset, root_ids_hash)
+        return response.model_dump()
+
+    # Fetch
+    raw = backend.get_bulk_connectivity(sorted_ids, direction=direction)
+    raw["n_root_ids"] = len(root_ids)
+    raw["direction"] = direction
+
+    response = format_bulk_connectivity(raw, dataset, root_ids_hash)
     return response.model_dump()

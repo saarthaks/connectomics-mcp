@@ -3,6 +3,9 @@
 Constructs fully encoded Neuroglancer URLs with EM + segmentation
 layers and selected segments, using the correct coordinate space
 and Neuroglancer instance for each dataset.
+
+State format modeled on nglui (seung-lab/nglui) output for maximum
+compatibility with spelunker and ngl.flywire.ai viewers.
 """
 
 from __future__ import annotations
@@ -15,28 +18,67 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Dataset-specific configuration for Neuroglancer URL building
+
+def _source_with_transform(
+    url: str,
+    dimensions: dict[str, list],
+) -> dict[str, Any]:
+    """Wrap a source URL with an outputDimensions transform."""
+    return {
+        "url": url,
+        "transform": {"outputDimensions": dimensions},
+        "subsources": {},
+        "enableDefaultSubsources": True,
+    }
+
+
+# Dataset-specific configuration for Neuroglancer URL building.
+# Dimensions use SI meters: [scale, "m"].
 NEUROGLANCER_CONFIGS: dict[str, dict[str, Any]] = {
     "minnie65": {
-        "base_url": "https://neuroglancer.brain-map.org",
+        "base_url": "https://spelunker.cave-explorer.org",
         "em_source": "precomputed://https://bossdb-open-data.s3.amazonaws.com/iarpa_microns/minnie/minnie65/em",
-        "seg_source": "graphene://https://prodv1.flywire-daf.com/segmentation/api/v1/minnie65_public",
-        "voxel_size": [8, 8, 40],
+        "seg_source": "graphene://middleauth+https://minnie.microns-daf.com/segmentation/table/minnie65_public",
+        "skeleton_source": "precomputed://middleauth+https://minnie.microns-daf.com/skeletoncache/api/v1/minnie65_public/precomputed/skeleton/",
+        "dimensions": {
+            "x": [4e-9, "m"],
+            "y": [4e-9, "m"],
+            "z": [40e-9, "m"],
+        },
+        "voxel_size": [4, 4, 40],
         "coordinate_space": "nm",
+        "url_encoding": "json",
+        "projection_scale": 50000.0,
     },
     "flywire": {
         "base_url": "https://ngl.flywire.ai",
-        "em_source": "precomputed://https://bossdb-open-data.s3.amazonaws.com/flywire/fafbv14",
-        "seg_source": "graphene://https://prodv1.flywire-daf.com/segmentation/api/v1/flywire_fafb_production",
+        "em_source": "precomputed://gs://flywire_em/aligned/v1",
+        "seg_source": "graphene://https://prod.flywire-daf.com/segmentation/1.0/flywire_public",
+        "skeleton_source": None,
+        "dimensions": {
+            "x": [4e-9, "m"],
+            "y": [4e-9, "m"],
+            "z": [40e-9, "m"],
+        },
         "voxel_size": [4, 4, 40],
         "coordinate_space": "nm",
+        "url_encoding": "json",
+        "projection_scale": 50000.0,
     },
     "hemibrain": {
         "base_url": "https://neuroglancer-demo.appspot.com",
         "em_source": "precomputed://gs://neuroglancer-janelia-flyem-hemibrain/emdata/clahe_yz/jpeg",
         "seg_source": "precomputed://gs://neuroglancer-janelia-flyem-hemibrain/v1.2/segmentation",
+        "skeleton_source": None,
+        "dimensions": {
+            "x": [8e-9, "m"],
+            "y": [8e-9, "m"],
+            "z": [8e-9, "m"],
+        },
         "voxel_size": [8, 8, 8],
         "coordinate_space": "nm",
+        "url_encoding": "compressed",
+        "projection_scale": 30000.0,
     },
 }
 
@@ -45,6 +87,7 @@ def _build_state_json(
     segment_ids: list[int | str],
     dataset: str,
     annotations: list[dict] | None = None,
+    position: list[float] | None = None,
 ) -> dict[str, Any]:
     """Build the Neuroglancer state JSON for the given segments.
 
@@ -56,6 +99,8 @@ def _build_state_json(
         Dataset name for config lookup.
     annotations : list[dict], optional
         Point annotations to add as an annotation layer.
+    position : list[float], optional
+        3D position [x, y, z] in voxel coordinates to center the view on.
 
     Returns
     -------
@@ -63,22 +108,33 @@ def _build_state_json(
         Neuroglancer state JSON.
     """
     config = NEUROGLANCER_CONFIGS[dataset]
+    dims = config["dimensions"]
 
-    layers = [
-        {
-            "type": "image",
-            "source": config["em_source"],
-            "name": "em",
-        },
-        {
-            "type": "segmentation",
-            "source": config["seg_source"],
-            "name": "segmentation",
-            "segments": [str(sid) for sid in segment_ids],
-        },
-    ]
+    # Image layer with transform
+    image_layer: dict[str, Any] = {
+        "type": "image",
+        "source": [_source_with_transform(config["em_source"], dims)],
+        "name": "imagery",
+    }
 
-    layer_names = ["em", "segmentation"]
+    # Segmentation layer — sources include graphene + optional skeleton
+    seg_sources = [_source_with_transform(config["seg_source"], dims)]
+    if config.get("skeleton_source"):
+        seg_sources.append(
+            _source_with_transform(config["skeleton_source"], dims)
+        )
+
+    seg_layer: dict[str, Any] = {
+        "type": "segmentation",
+        "source": seg_sources,
+        "name": "segmentation",
+        "segments": [str(sid) for sid in segment_ids],
+        "selectedAlpha": 0.5,
+        "notSelectedAlpha": 0.0,
+        "objectAlpha": 1.0,
+    }
+
+    layers: list[dict[str, Any]] = [image_layer, seg_layer]
 
     if annotations:
         layers.append(
@@ -88,13 +144,18 @@ def _build_state_json(
                 "annotations": annotations,
             }
         )
-        layer_names.append("annotations")
 
-    state = {
+    state: dict[str, Any] = {
+        "dimensions": dims,
+        "crossSectionScale": 1.0,
+        "projectionScale": config.get("projection_scale", 50000.0),
+        "showSlices": False,
         "layers": layers,
-        "selectedLayer": {"layer": "segmentation", "visible": True},
-        "layout": "4panel",
+        "layout": "3d",
     }
+
+    if position is not None:
+        state["position"] = position
 
     return state
 
@@ -103,6 +164,7 @@ def build_neuroglancer_url(
     segment_ids: list[int | str],
     dataset: str,
     annotations: list[dict] | None = None,
+    position: list[float] | None = None,
 ) -> str:
     """Build a Neuroglancer URL for the given segments and dataset.
 
@@ -114,6 +176,8 @@ def build_neuroglancer_url(
         Dataset name (must be in NEUROGLANCER_CONFIGS).
     annotations : list[dict], optional
         Point annotations to overlay.
+    position : list[float], optional
+        3D position [x, y, z] in voxel coordinates to center the view on.
 
     Returns
     -------
@@ -129,14 +193,23 @@ def build_neuroglancer_url(
         raise KeyError(f"No Neuroglancer config for dataset '{dataset}'")
 
     config = NEUROGLANCER_CONFIGS[dataset]
-    state = _build_state_json(segment_ids, dataset, annotations)
+    state = _build_state_json(segment_ids, dataset, annotations, position)
 
-    state_json = json.dumps(state, separators=(",", ":"))
-    compressed = zlib.compress(state_json.encode("utf-8"))
-    encoded = base64.urlsafe_b64encode(compressed).decode("ascii")
+    encoding = config.get("url_encoding", "compressed")
+    if encoding == "json":
+        state_json = json.dumps(state, separators=(",", ":"))
+        url = f"{config['base_url']}/#!{state_json}"
+    else:
+        state_json = json.dumps(state, separators=(",", ":"))
+        compressed = zlib.compress(state_json.encode("utf-8"))
+        encoded = base64.urlsafe_b64encode(compressed).decode("ascii")
+        url = f"{config['base_url']}/#!{encoded}"
 
-    url = f"{config['base_url']}/#!{encoded}"
-    logger.debug("Built Neuroglancer URL for %d segments in %s", len(segment_ids), dataset)
+    logger.debug(
+        "Built Neuroglancer URL for %d segments in %s",
+        len(segment_ids),
+        dataset,
+    )
     return url
 
 
@@ -151,6 +224,6 @@ def get_layers_for_dataset(dataset: str) -> list[str]:
     Returns
     -------
     list[str]
-        Layer names (e.g. ["em", "segmentation"]).
+        Layer names (e.g. ["imagery", "segmentation"]).
     """
-    return ["em", "segmentation"]
+    return ["imagery", "segmentation"]

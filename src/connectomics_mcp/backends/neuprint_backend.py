@@ -285,6 +285,105 @@ class NeuPrintBackend(ConnectomeBackend):
 
         raise DatasetNotSupported(self.dataset_name, "cave")
 
+    def get_bulk_connectivity(
+        self, root_ids: list[int], direction: str = "both"
+    ) -> dict[str, Any]:
+        """Fetch connectivity for multiple neurons in bulk from neuPrint.
+
+        Parameters
+        ----------
+        root_ids : list[int]
+            Body IDs to query.
+        direction : str
+            "pre" (outgoing), "post" (incoming), or "both".
+
+        Returns
+        -------
+        dict
+            Keys: edges_df, materialization_version, warnings.
+        """
+        import time
+
+        logger.debug(
+            "get_bulk_connectivity(%d IDs, %s) on %s",
+            len(root_ids), direction, self.dataset_name,
+        )
+
+        # Ensure default client is initialized before using module-level functions
+        _ = self.client
+        from neuprint import NeuronCriteria as NC, fetch_adjacencies
+
+        warnings: list[str] = []
+        BATCH_SIZE = 200
+        batches = [
+            root_ids[i : i + BATCH_SIZE]
+            for i in range(0, len(root_ids), BATCH_SIZE)
+        ]
+        all_edges: list[pd.DataFrame] = []
+
+        for batch_num, batch in enumerate(batches, 1):
+            logger.info(
+                "Bulk connectivity batch %d/%d (%d IDs)",
+                batch_num, len(batches), len(batch),
+            )
+
+            try:
+                if direction == "pre":
+                    neuron_df, conn_df = fetch_adjacencies(
+                        NC(bodyId=batch), NC()
+                    )
+                elif direction == "post":
+                    neuron_df, conn_df = fetch_adjacencies(
+                        NC(), NC(bodyId=batch)
+                    )
+                else:
+                    # Both: fetch outgoing and incoming
+                    _, conn_pre = fetch_adjacencies(NC(bodyId=batch), NC())
+                    _, conn_post = fetch_adjacencies(NC(), NC(bodyId=batch))
+                    conn_df = pd.concat(
+                        [conn_pre, conn_post], ignore_index=True
+                    )
+
+                if not conn_df.empty:
+                    # conn_df has bodyId_pre, bodyId_post, roi, weight
+                    edge_df = conn_df.rename(columns={
+                        "bodyId_pre": "pre_root_id",
+                        "bodyId_post": "post_root_id",
+                        "roi": "neuropil",
+                        "weight": "syn_count",
+                    })[["pre_root_id", "post_root_id", "syn_count", "neuropil"]]
+                    all_edges.append(edge_df)
+            except Exception as e:
+                logger.warning("Batch %d query failed: %s", batch_num, e)
+                warnings.append(f"Batch {batch_num} query failed: {e}")
+
+            if batch_num < len(batches):
+                time.sleep(0.5)
+
+        empty = pd.DataFrame(
+            columns=["pre_root_id", "post_root_id", "syn_count", "neuropil"]
+        )
+
+        if all_edges:
+            edges_df = pd.concat(all_edges, ignore_index=True)
+            # De-duplicate in case both directions returned overlapping rows
+            edges_df = (
+                edges_df.groupby(
+                    ["pre_root_id", "post_root_id", "neuropil"],
+                    dropna=False,
+                )["syn_count"]
+                .sum()
+                .reset_index()
+            )
+        else:
+            edges_df = empty
+
+        return {
+            "edges_df": edges_df,
+            "materialization_version": None,
+            "warnings": warnings,
+        }
+
     def fetch_cypher(self, query: str) -> dict[str, Any]:
         """Execute a Cypher query against neuPrint.
 

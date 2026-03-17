@@ -128,7 +128,7 @@ class TestNeuroglancerUrlResponse:
             url="https://neuroglancer.brain-map.org/#!...",
             dataset="minnie65",
             n_segments=3,
-            layers_included=["em", "segmentation"],
+            layers_included=["imagery", "segmentation"],
         )
         assert resp.model_dump()["coordinate_space"] == "nm"
 

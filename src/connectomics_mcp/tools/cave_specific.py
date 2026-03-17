@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any
 
 from connectomics_mcp.exceptions import DatasetNotSupported, StaleRootIdError
 from connectomics_mcp.output_contracts.formatters import (
     format_annotation_table,
+    format_bulk_coregistration,
+    format_bulk_functional_area,
+    format_bulk_functional_properties,
+    format_bulk_synapse_targets,
     format_cell_mtypes,
     format_coregistration,
     format_edit_history,
@@ -491,3 +496,440 @@ def get_functional_area(
 
     response = format_functional_area(raw, dataset)
     return response.model_dump()
+
+
+# ---------------------------------------------------------------------------
+# Bulk MICrONS tools
+# ---------------------------------------------------------------------------
+
+
+def _bulk_staleness_gate(
+    root_ids: list[int], dataset: str
+) -> None:
+    """Validate all root IDs are current, raising ValueError if any are stale."""
+    backend = get_backend(dataset)
+    raw_validation = backend.validate_root_ids(root_ids)
+    stale = [
+        r["root_id"]
+        for r in raw_validation["results"]
+        if not r["is_current"]
+    ]
+    if stale:
+        raise ValueError(
+            f"Stale root IDs: {stale}. Use validate_root_ids() to get "
+            f"current IDs before calling bulk tools."
+        )
+
+
+def _bulk_cache_key(root_ids: list[int], *extra_parts: str) -> str:
+    """Compute content-addressable cache key for bulk queries."""
+    sorted_ids = sorted(root_ids)
+    hash_input = ",".join(str(i) for i in sorted_ids)
+    if extra_parts:
+        hash_input += ":" + ":".join(extra_parts)
+    return hashlib.sha256(hash_input.encode()).hexdigest()[:8]
+
+
+def _check_bulk_cache(
+    tool: str, dataset: str, extra_key: str, mat_version: int | None
+) -> dict[str, Any] | None:
+    """Check for a cached bulk artifact. Returns response dict or None."""
+    from connectomics_mcp.artifacts.writer import _find_cached
+
+    cached_path = _find_cached(
+        tool=tool,
+        dataset=dataset,
+        neuron_id=None,
+        materialization_version=mat_version,
+        extra_key=extra_key,
+    )
+    if cached_path is None:
+        return None
+
+    import pandas as pd
+    from datetime import datetime, timezone
+
+    from connectomics_mcp.artifacts.writer import _describe_columns
+    from connectomics_mcp.output_contracts.schemas import ArtifactManifest
+
+    cached_df = pd.read_parquet(cached_path)
+    manifest = ArtifactManifest(
+        artifact_path=str(cached_path),
+        n_rows=len(cached_df),
+        columns=list(cached_df.columns),
+        schema_description=_describe_columns(cached_df),
+        dataset=dataset,
+        query_timestamp=datetime.fromtimestamp(
+            cached_path.stat().st_mtime, tz=timezone.utc
+        ).isoformat(),
+        materialization_version=mat_version,
+        cache_hit=True,
+    )
+    return {"cached_df": cached_df, "manifest": manifest}
+
+
+def get_bulk_coregistration(
+    root_ids: list[int], dataset: str
+) -> dict[str, Any]:
+    """Get EM-to-functional coregistration for multiple neurons in bulk.
+
+    Fetches coregistration data for all given root IDs and saves the
+    complete result as a single Parquet artifact.
+
+    Parameters
+    ----------
+    root_ids : list[int]
+        Root IDs to query. All must be current.
+    dataset : str
+        Must be ``"minnie65"``.
+
+    Returns
+    -------
+    dict
+        BulkCoregistrationResponse with artifact_manifest.
+
+    Raises
+    ------
+    DatasetNotSupported
+        If not minnie65.
+    ValueError
+        If any root ID is stale.
+    """
+    _check_minnie65(dataset, "bulk_coregistration")
+    backend = get_backend(dataset)
+
+    extra_key = _bulk_cache_key(root_ids)
+    mat_version = None
+    try:
+        mat_version = backend.client.materialize.version
+    except Exception:
+        pass
+
+    cached = _check_bulk_cache(
+        "bulk_coregistration", dataset, extra_key, mat_version
+    )
+    if cached is not None:
+        from connectomics_mcp.output_contracts.schemas import (
+            BulkCoregistrationResponse,
+        )
+
+        df = cached["cached_df"]
+        score_dist = {}
+        sessions: list[int] = []
+        if not df.empty:
+            import numpy as np
+
+            if "score" in df.columns:
+                score_dist = {
+                    "mean": round(float(df["score"].mean()), 2),
+                    "median": round(float(df["score"].median()), 2),
+                    "max": int(df["score"].max()),
+                    "p90": round(float(np.percentile(df["score"], 90)), 2),
+                }
+            if "session" in df.columns:
+                sessions = sorted(int(s) for s in df["session"].dropna().unique())
+        return BulkCoregistrationResponse(
+            dataset=dataset,
+            n_root_ids=len(root_ids),
+            n_units=len(df),
+            score_distribution=score_dist,
+            sessions=sessions,
+            cached=True,
+            artifact_manifest=cached["manifest"],
+            warnings=[],
+        ).model_dump()
+
+    _bulk_staleness_gate(root_ids, dataset)
+
+    if not root_ids:
+        import pandas as pd
+
+        raw = {
+            "table_df": pd.DataFrame(),
+            "table_name": "coregistration_auto_phase3_fwd_apl_vess_combined_v2",
+            "materialization_version": mat_version,
+            "warnings": [],
+            "n_root_ids": 0,
+        }
+        return format_bulk_coregistration(raw, dataset, extra_key).model_dump()
+
+    raw = backend.bulk_query_coregistration(sorted(root_ids))
+    raw["n_root_ids"] = len(root_ids)
+    return format_bulk_coregistration(raw, dataset, extra_key).model_dump()
+
+
+def get_bulk_functional_properties(
+    root_ids: list[int],
+    dataset: str,
+    coregistration_source: str = "auto_phase3",
+) -> dict[str, Any]:
+    """Get digital twin functional properties for multiple neurons in bulk.
+
+    Fetches orientation/direction selectivity and model performance
+    for all given root IDs. Complete results saved as Parquet artifact.
+
+    Parameters
+    ----------
+    root_ids : list[int]
+        Root IDs to query. All must be current.
+    dataset : str
+        Must be ``"minnie65"``.
+    coregistration_source : str
+        Table variant: ``"auto_phase3"`` (default), ``"coreg_v4"``,
+        or ``"apl_vess"``.
+
+    Returns
+    -------
+    dict
+        BulkFunctionalPropertiesResponse with artifact_manifest.
+
+    Raises
+    ------
+    DatasetNotSupported
+        If not minnie65.
+    ValueError
+        If any root ID is stale.
+    """
+    _check_minnie65(dataset, "bulk_functional_properties")
+    backend = get_backend(dataset)
+
+    extra_key = _bulk_cache_key(root_ids, coregistration_source)
+    mat_version = None
+    try:
+        mat_version = backend.client.materialize.version
+    except Exception:
+        pass
+
+    cached = _check_bulk_cache(
+        "bulk_functional_properties", dataset, extra_key, mat_version
+    )
+    if cached is not None:
+        from connectomics_mcp.output_contracts.schemas import (
+            BulkFunctionalPropertiesResponse,
+        )
+
+        df = cached["cached_df"]
+        ori_dist = {}
+        dir_dist = {}
+        if not df.empty:
+            import numpy as np
+
+            if "OSI" in df.columns:
+                ori_dist = {
+                    "mean": round(float(df["OSI"].mean()), 2),
+                    "median": round(float(df["OSI"].median()), 2),
+                    "max": int(df["OSI"].max()),
+                    "p90": round(float(np.percentile(df["OSI"], 90)), 2),
+                }
+            if "DSI" in df.columns:
+                dir_dist = {
+                    "mean": round(float(df["DSI"].mean()), 2),
+                    "median": round(float(df["DSI"].median()), 2),
+                    "max": int(df["DSI"].max()),
+                    "p90": round(float(np.percentile(df["DSI"], 90)), 2),
+                }
+        return BulkFunctionalPropertiesResponse(
+            dataset=dataset,
+            n_root_ids=len(root_ids),
+            coregistration_source=coregistration_source,
+            n_units=len(df),
+            ori_selectivity_distribution=ori_dist,
+            dir_selectivity_distribution=dir_dist,
+            cached=True,
+            artifact_manifest=cached["manifest"],
+            warnings=[],
+        ).model_dump()
+
+    _bulk_staleness_gate(root_ids, dataset)
+
+    if not root_ids:
+        import pandas as pd
+
+        raw = {
+            "table_df": pd.DataFrame(),
+            "table_name": "",
+            "materialization_version": mat_version,
+            "warnings": [],
+            "n_root_ids": 0,
+            "coregistration_source": coregistration_source,
+        }
+        return format_bulk_functional_properties(
+            raw, dataset, extra_key
+        ).model_dump()
+
+    raw = backend.bulk_query_functional_properties(
+        sorted(root_ids), coregistration_source=coregistration_source
+    )
+    raw["n_root_ids"] = len(root_ids)
+    return format_bulk_functional_properties(
+        raw, dataset, extra_key
+    ).model_dump()
+
+
+def get_bulk_synapse_targets(
+    root_ids: list[int], dataset: str, direction: str = "post"
+) -> dict[str, Any]:
+    """Get per-synapse structural target predictions for multiple neurons.
+
+    Classifies each synapse as targeting spine, shaft, or soma for
+    all given root IDs. Complete results saved as Parquet artifact.
+
+    Parameters
+    ----------
+    root_ids : list[int]
+        Root IDs to query. All must be current.
+    dataset : str
+        Must be ``"minnie65"``.
+    direction : str
+        ``"post"`` for synapses onto these neurons (default),
+        ``"pre"`` for synapses from these neurons.
+
+    Returns
+    -------
+    dict
+        BulkSynapseTargetsResponse with artifact_manifest.
+
+    Raises
+    ------
+    DatasetNotSupported
+        If not minnie65.
+    ValueError
+        If any root ID is stale.
+    """
+    _check_minnie65(dataset, "bulk_synapse_targets")
+    backend = get_backend(dataset)
+
+    extra_key = _bulk_cache_key(root_ids, direction)
+    mat_version = None
+    try:
+        mat_version = backend.client.materialize.version
+    except Exception:
+        pass
+
+    cached = _check_bulk_cache(
+        "bulk_synapse_targets", dataset, extra_key, mat_version
+    )
+    if cached is not None:
+        from connectomics_mcp.output_contracts.schemas import (
+            BulkSynapseTargetsResponse,
+        )
+
+        df = cached["cached_df"]
+        tag_dist = {}
+        if not df.empty and "tag" in df.columns:
+            counts = df["tag"].dropna().value_counts()
+            tag_dist = {str(k): int(v) for k, v in counts.items()}
+        return BulkSynapseTargetsResponse(
+            dataset=dataset,
+            n_root_ids=len(root_ids),
+            direction=direction,
+            n_synapses=len(df),
+            target_distribution=tag_dist,
+            cached=True,
+            artifact_manifest=cached["manifest"],
+            warnings=[],
+        ).model_dump()
+
+    _bulk_staleness_gate(root_ids, dataset)
+
+    if not root_ids:
+        import pandas as pd
+
+        raw = {
+            "table_df": pd.DataFrame(),
+            "table_name": "synapse_target_predictions_ssa_v2",
+            "materialization_version": mat_version,
+            "warnings": [],
+            "n_root_ids": 0,
+            "direction": direction,
+        }
+        return format_bulk_synapse_targets(
+            raw, dataset, extra_key
+        ).model_dump()
+
+    raw = backend.bulk_query_synapse_targets(
+        sorted(root_ids), direction=direction
+    )
+    raw["n_root_ids"] = len(root_ids)
+    return format_bulk_synapse_targets(raw, dataset, extra_key).model_dump()
+
+
+def get_bulk_functional_area(
+    root_ids: list[int], dataset: str
+) -> dict[str, Any]:
+    """Get functional brain area assignments for multiple neurons in bulk.
+
+    Returns area labels (V1, AL, RL, LM) with boundary distances for
+    all given root IDs. Complete results saved as Parquet artifact.
+
+    Parameters
+    ----------
+    root_ids : list[int]
+        Root IDs to query. All must be current.
+    dataset : str
+        Must be ``"minnie65"``.
+
+    Returns
+    -------
+    dict
+        BulkFunctionalAreaResponse with artifact_manifest.
+
+    Raises
+    ------
+    DatasetNotSupported
+        If not minnie65.
+    ValueError
+        If any root ID is stale.
+    """
+    _check_minnie65(dataset, "bulk_functional_area")
+    backend = get_backend(dataset)
+
+    extra_key = _bulk_cache_key(root_ids)
+    mat_version = None
+    try:
+        mat_version = backend.client.materialize.version
+    except Exception:
+        pass
+
+    cached = _check_bulk_cache(
+        "bulk_functional_area", dataset, extra_key, mat_version
+    )
+    if cached is not None:
+        from connectomics_mcp.output_contracts.schemas import (
+            BulkFunctionalAreaResponse,
+        )
+
+        df = cached["cached_df"]
+        area_dist = {}
+        if not df.empty and "tag" in df.columns:
+            counts = df["tag"].dropna().value_counts()
+            area_dist = {str(k): int(v) for k, v in counts.items()}
+        return BulkFunctionalAreaResponse(
+            dataset=dataset,
+            n_root_ids=len(root_ids),
+            n_total=len(df),
+            area_distribution=area_dist,
+            cached=True,
+            artifact_manifest=cached["manifest"],
+            warnings=[],
+        ).model_dump()
+
+    _bulk_staleness_gate(root_ids, dataset)
+
+    if not root_ids:
+        import pandas as pd
+
+        raw = {
+            "table_df": pd.DataFrame(),
+            "table_name": "nucleus_functional_area_assignment",
+            "materialization_version": mat_version,
+            "warnings": [],
+            "n_root_ids": 0,
+        }
+        return format_bulk_functional_area(
+            raw, dataset, extra_key
+        ).model_dump()
+
+    raw = backend.bulk_query_functional_area(sorted(root_ids))
+    raw["n_root_ids"] = len(root_ids)
+    return format_bulk_functional_area(raw, dataset, extra_key).model_dump()

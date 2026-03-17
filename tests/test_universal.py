@@ -293,7 +293,7 @@ class TestBuildNeuroglancerUrlTool:
 
     def test_layers_included(self, mock_cave_backend):
         result = build_neuroglancer_url_tool([123, 456], "minnie65")
-        assert result["layers_included"] == ["em", "segmentation"]
+        assert result["layers_included"] == ["imagery", "segmentation"]
 
     def test_coordinate_space(self, mock_cave_backend):
         result = build_neuroglancer_url_tool([123], "minnie65")

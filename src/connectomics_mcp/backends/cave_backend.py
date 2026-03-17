@@ -997,6 +997,116 @@ class CAVEBackend(ConnectomeBackend):
             "edits_df": edits_df,
         }
 
+    def get_bulk_connectivity(
+        self, root_ids: list[int], direction: str = "both"
+    ) -> dict[str, Any]:
+        """Fetch connectivity for multiple neurons in bulk from CAVE.
+
+        Parameters
+        ----------
+        root_ids : list[int]
+            Root IDs to query. Caller is responsible for staleness checks.
+        direction : str
+            "pre" (outgoing), "post" (incoming), or "both".
+
+        Returns
+        -------
+        dict
+            Keys: edges_df, materialization_version, warnings.
+        """
+        logger.debug(
+            "get_bulk_connectivity(%d IDs, %s) on %s",
+            len(root_ids), direction, self.dataset_name,
+        )
+
+        warnings: list[str] = []
+
+        mat_version = None
+        try:
+            mat_version = self.client.materialize.version
+        except Exception:
+            pass
+
+        BATCH_SIZE = 200
+        batches = [
+            root_ids[i : i + BATCH_SIZE]
+            for i in range(0, len(root_ids), BATCH_SIZE)
+        ]
+        all_edges: list[pd.DataFrame] = []
+
+        for batch_num, batch in enumerate(batches, 1):
+            logger.info(
+                "Bulk connectivity batch %d/%d (%d IDs)",
+                batch_num, len(batches), len(batch),
+            )
+
+            if direction in ("pre", "both"):
+                try:
+                    df = self.client.materialize.query_table(
+                        self.synapse_table,
+                        filter_in_dict={"pre_pt_root_id": batch},
+                        select_columns=["pre_pt_root_id", "post_pt_root_id"],
+                    )
+                    if not df.empty:
+                        agg = (
+                            df.groupby(["pre_pt_root_id", "post_pt_root_id"])
+                            .size()
+                            .reset_index(name="syn_count")
+                        )
+                        all_edges.append(agg)
+                except Exception as e:
+                    logger.warning("Batch %d pre query failed: %s", batch_num, e)
+                    warnings.append(f"Batch {batch_num} pre query failed: {e}")
+
+            if direction in ("post", "both"):
+                try:
+                    df = self.client.materialize.query_table(
+                        self.synapse_table,
+                        filter_in_dict={"post_pt_root_id": batch},
+                        select_columns=["pre_pt_root_id", "post_pt_root_id"],
+                    )
+                    if not df.empty:
+                        agg = (
+                            df.groupby(["pre_pt_root_id", "post_pt_root_id"])
+                            .size()
+                            .reset_index(name="syn_count")
+                        )
+                        all_edges.append(agg)
+                except Exception as e:
+                    logger.warning("Batch %d post query failed: %s", batch_num, e)
+                    warnings.append(f"Batch {batch_num} post query failed: {e}")
+
+            if batch_num < len(batches):
+                time.sleep(0.5)
+
+        empty = pd.DataFrame(
+            columns=["pre_root_id", "post_root_id", "syn_count", "neuropil"]
+        )
+
+        if all_edges:
+            edges_df = pd.concat(all_edges, ignore_index=True)
+            edges_df = (
+                edges_df.groupby(["pre_pt_root_id", "post_pt_root_id"])["syn_count"]
+                .sum()
+                .reset_index()
+            )
+            edges_df.rename(
+                columns={
+                    "pre_pt_root_id": "pre_root_id",
+                    "post_pt_root_id": "post_root_id",
+                },
+                inplace=True,
+            )
+            edges_df["neuropil"] = None
+        else:
+            edges_df = empty
+
+        return {
+            "edges_df": edges_df,
+            "materialization_version": mat_version,
+            "warnings": warnings,
+        }
+
     def fetch_cypher(self, query: str) -> dict[str, Any]:
         """Not applicable for CAVE datasets."""
         from connectomics_mcp.exceptions import DatasetNotSupported
@@ -1367,6 +1477,190 @@ class MICrONSBackend(CAVEBackend):
             logger.warning("Failed staleness check for %d: %s", root_id, e)
             warnings.append(f"Could not verify root ID currency: {e}")
         return is_current, warnings
+
+    def _bulk_query_reference_table(
+        self,
+        table_name: str,
+        root_ids: list[int],
+        batch_size: int = 200,
+        content_aware_kwarg: str = "pt_root_id",
+    ) -> tuple[pd.DataFrame, list[str]]:
+        """Batch-query a CAVE reference table for multiple root IDs.
+
+        Uses the content-aware API (required for bound spatial point
+        columns) with batching and rate limiting.
+
+        Parameters
+        ----------
+        table_name : str
+            CAVE table name.
+        root_ids : list[int]
+            Root IDs to query.
+        batch_size : int
+            IDs per batch (default 200).
+        content_aware_kwarg : str
+            Keyword argument name for the content-aware API call
+            (default ``"pt_root_id"``; synapse tables use
+            ``"pre_pt_root_id"`` or ``"post_pt_root_id"``).
+
+        Returns
+        -------
+        tuple[pd.DataFrame, list[str]]
+            Combined DataFrame and list of warnings.
+        """
+        warnings: list[str] = []
+        batches = [
+            root_ids[i : i + batch_size]
+            for i in range(0, len(root_ids), batch_size)
+        ]
+        all_dfs: list[pd.DataFrame] = []
+
+        for batch_num, batch in enumerate(batches, 1):
+            logger.info(
+                "Bulk %s batch %d/%d (%d IDs)",
+                table_name, batch_num, len(batches), len(batch),
+            )
+            try:
+                table_ref = getattr(
+                    self.client.materialize.tables, table_name
+                )
+                df = table_ref(**{content_aware_kwarg: batch}).query()
+                if not df.empty:
+                    all_dfs.append(df)
+            except Exception as e:
+                logger.warning(
+                    "Batch %d query on %s failed: %s",
+                    batch_num, table_name, e,
+                )
+                warnings.append(
+                    f"Batch {batch_num} query on {table_name} failed: {e}"
+                )
+            if batch_num < len(batches):
+                time.sleep(0.5)
+
+        if all_dfs:
+            result_df = pd.concat(all_dfs, ignore_index=True)
+        else:
+            result_df = pd.DataFrame()
+
+        return result_df, warnings
+
+    def bulk_query_coregistration(
+        self, root_ids: list[int]
+    ) -> dict[str, Any]:
+        """Bulk coregistration query for multiple root IDs."""
+        logger.debug(
+            "bulk_query_coregistration(%d IDs) on %s",
+            len(root_ids), self.dataset_name,
+        )
+        mat_version = None
+        try:
+            mat_version = self.client.materialize.version
+        except Exception:
+            pass
+
+        table_df, warnings = self._bulk_query_reference_table(
+            self.COREGISTRATION_TABLE, root_ids
+        )
+        return {
+            "dataset": self.dataset_name,
+            "table_name": self.COREGISTRATION_TABLE,
+            "materialization_version": mat_version,
+            "warnings": warnings,
+            "table_df": table_df,
+        }
+
+    def bulk_query_functional_properties(
+        self, root_ids: list[int], coregistration_source: str = "auto_phase3"
+    ) -> dict[str, Any]:
+        """Bulk functional properties query for multiple root IDs."""
+        logger.debug(
+            "bulk_query_functional_properties(%d IDs, src=%s) on %s",
+            len(root_ids), coregistration_source, self.dataset_name,
+        )
+        table_name = self.FUNCTIONAL_PROPERTIES_TABLES.get(
+            coregistration_source
+        )
+        if table_name is None:
+            valid = list(self.FUNCTIONAL_PROPERTIES_TABLES.keys())
+            raise ValueError(
+                f"Unknown coregistration_source '{coregistration_source}'. "
+                f"Valid values: {valid}"
+            )
+
+        mat_version = None
+        try:
+            mat_version = self.client.materialize.version
+        except Exception:
+            pass
+
+        table_df, warnings = self._bulk_query_reference_table(
+            table_name, root_ids
+        )
+        return {
+            "dataset": self.dataset_name,
+            "table_name": table_name,
+            "materialization_version": mat_version,
+            "warnings": warnings,
+            "table_df": table_df,
+            "coregistration_source": coregistration_source,
+        }
+
+    def bulk_query_synapse_targets(
+        self, root_ids: list[int], direction: str = "post"
+    ) -> dict[str, Any]:
+        """Bulk synapse targets query for multiple root IDs."""
+        logger.debug(
+            "bulk_query_synapse_targets(%d IDs, direction=%s) on %s",
+            len(root_ids), direction, self.dataset_name,
+        )
+        mat_version = None
+        try:
+            mat_version = self.client.materialize.version
+        except Exception:
+            pass
+
+        kwarg = (
+            "post_pt_root_id" if direction == "post"
+            else "pre_pt_root_id"
+        )
+        table_df, warnings = self._bulk_query_reference_table(
+            self.SYNAPSE_TARGETS_TABLE, root_ids,
+            content_aware_kwarg=kwarg,
+        )
+        return {
+            "dataset": self.dataset_name,
+            "table_name": self.SYNAPSE_TARGETS_TABLE,
+            "materialization_version": mat_version,
+            "warnings": warnings,
+            "table_df": table_df,
+            "direction": direction,
+        }
+
+    def bulk_query_functional_area(
+        self, root_ids: list[int]
+    ) -> dict[str, Any]:
+        """Bulk functional area query for multiple root IDs."""
+        logger.debug(
+            "bulk_query_functional_area(%d IDs) on %s",
+            len(root_ids), self.dataset_name,
+        )
+        mat_version = None
+        try:
+            mat_version = self.client.materialize.version
+        except Exception:
+            pass
+
+        table_df, warnings = self._bulk_query_reference_table(
+            self.FUNCTIONAL_AREA_TABLE, root_ids
+        )
+        return {
+            "dataset": self.dataset_name,
+            "table_name": self.FUNCTIONAL_AREA_TABLE,
+            "materialization_version": mat_version,
+            "warnings": warnings,
+            "table_df": table_df,
+        }
 
     def _query_reference_table(
         self,

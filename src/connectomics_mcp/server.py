@@ -115,6 +115,40 @@ def get_connectivity(
 
 
 @mcp.tool()
+def get_bulk_connectivity(
+    root_ids: list[int], dataset: str, direction: str = "both"
+) -> dict:
+    """Get synaptic connectivity for multiple neurons in bulk.
+
+    Fetches all connections involving the given root IDs and saves
+    the complete edge table as a single Parquet artifact. Much faster
+    than calling ``get_connectivity`` per neuron for circuit analysis.
+
+    The artifact has columns: ``pre_root_id``, ``post_root_id``,
+    ``syn_count``, ``neuropil``. Load with
+    ``pd.read_parquet(artifact_path)`` for full analysis.
+
+    Parameters
+    ----------
+    root_ids : list[int]
+        Neuron identifiers to query.
+    dataset : str
+        Dataset to query. Supported: "minnie65", "flywire",
+        "hemibrain".
+    direction : str
+        "pre" (outgoing), "post" (incoming), or "both" (default).
+
+    Returns
+    -------
+    dict
+        BulkConnectivityResponse with artifact_manifest pointing to
+        the full edge table on disk, plus n_edges, total_synapses,
+        and cached flag.
+    """
+    return universal.get_bulk_connectivity(root_ids, dataset, direction)
+
+
+@mcp.tool()
 def validate_root_ids(root_ids: list[int], dataset: str) -> dict:
     """Check whether neuron IDs are current.
 
@@ -656,6 +690,122 @@ def get_functional_area(
         area_distribution.
     """
     return cave_specific.get_functional_area(dataset, neuron_id, by, area)
+
+
+@mcp.tool()
+def get_bulk_coregistration(root_ids: list[int], dataset: str) -> dict:
+    """Get EM-to-functional coregistration for multiple neurons in bulk.
+
+    Fetches coregistration data for all given root IDs and saves the
+    complete result as a single Parquet artifact. Load with
+    ``pd.read_parquet(artifact_path)`` for full analysis.
+
+    Only available for MICrONS (minnie65).
+
+    Parameters
+    ----------
+    root_ids : list[int]
+        Root IDs to query. All must be current.
+    dataset : str
+        Must be "minnie65".
+
+    Returns
+    -------
+    dict
+        BulkCoregistrationResponse with artifact_manifest, n_units,
+        score_distribution, and sessions list.
+    """
+    return cave_specific.get_bulk_coregistration(root_ids, dataset)
+
+
+@mcp.tool()
+def get_bulk_functional_properties(
+    root_ids: list[int],
+    dataset: str,
+    coregistration_source: str = "auto_phase3",
+) -> dict:
+    """Get digital twin functional properties for multiple neurons in bulk.
+
+    Fetches orientation/direction selectivity and model performance
+    metrics for all given root IDs. Complete results saved as
+    Parquet artifact.
+
+    Only available for MICrONS (minnie65).
+
+    Parameters
+    ----------
+    root_ids : list[int]
+        Root IDs to query. All must be current.
+    dataset : str
+        Must be "minnie65".
+    coregistration_source : str
+        Table variant: "auto_phase3" (default), "coreg_v4",
+        or "apl_vess".
+
+    Returns
+    -------
+    dict
+        BulkFunctionalPropertiesResponse with artifact_manifest,
+        ori_selectivity_distribution, dir_selectivity_distribution.
+    """
+    return cave_specific.get_bulk_functional_properties(
+        root_ids, dataset, coregistration_source
+    )
+
+
+@mcp.tool()
+def get_bulk_synapse_targets(
+    root_ids: list[int], dataset: str, direction: str = "post"
+) -> dict:
+    """Get per-synapse structural target predictions for multiple neurons.
+
+    Classifies each synapse as targeting spine, shaft, or soma for
+    all given root IDs. Complete results saved as Parquet artifact.
+
+    Only available for MICrONS (minnie65).
+
+    Parameters
+    ----------
+    root_ids : list[int]
+        Root IDs to query. All must be current.
+    dataset : str
+        Must be "minnie65".
+    direction : str
+        "post" for synapses onto these neurons (default),
+        "pre" for synapses from these neurons.
+
+    Returns
+    -------
+    dict
+        BulkSynapseTargetsResponse with artifact_manifest,
+        n_synapses, target_distribution.
+    """
+    return cave_specific.get_bulk_synapse_targets(root_ids, dataset, direction)
+
+
+@mcp.tool()
+def get_bulk_functional_area(root_ids: list[int], dataset: str) -> dict:
+    """Get functional brain area assignments for multiple neurons in bulk.
+
+    Returns area labels (V1, AL, RL, LM) with boundary distances for
+    all given root IDs. Complete results saved as Parquet artifact.
+
+    Only available for MICrONS (minnie65).
+
+    Parameters
+    ----------
+    root_ids : list[int]
+        Root IDs to query. All must be current.
+    dataset : str
+        Must be "minnie65".
+
+    Returns
+    -------
+    dict
+        BulkFunctionalAreaResponse with artifact_manifest, n_total,
+        area_distribution.
+    """
+    return cave_specific.get_bulk_functional_area(root_ids, dataset)
 
 
 def main() -> None:

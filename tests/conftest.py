@@ -658,6 +658,119 @@ class MockCAVEBackend(ConnectomeBackend):
 
         raise DatasetNotSupported("minnie65", "neuprint")
 
+    def get_bulk_connectivity(
+        self, root_ids: list[int], direction: str = "both"
+    ) -> dict[str, Any]:
+        """Return mock bulk connectivity edges."""
+        rows = []
+        for i, rid in enumerate(root_ids):
+            for j, rid2 in enumerate(root_ids):
+                if i != j:
+                    if direction in ("pre", "both"):
+                        rows.append({
+                            "pre_root_id": rid,
+                            "post_root_id": rid2,
+                            "syn_count": 10 + i + j,
+                            "neuropil": None,
+                        })
+        edges_df = pd.DataFrame(
+            rows,
+            columns=["pre_root_id", "post_root_id", "syn_count", "neuropil"],
+        ) if rows else pd.DataFrame(
+            columns=["pre_root_id", "post_root_id", "syn_count", "neuropil"]
+        )
+        return {
+            "edges_df": edges_df,
+            "materialization_version": 943,
+            "warnings": [],
+        }
+
+    def bulk_query_coregistration(
+        self, root_ids: list[int]
+    ) -> dict[str, Any]:
+        """Return mock bulk coregistration data."""
+        rows = []
+        for rid in root_ids:
+            rows.append({
+                "target_id": 264824, "session": 4, "scan_idx": 7, "unit_id": 123,
+                "field": 1, "residual": 2.5, "score": 8.3, "pt_root_id": rid,
+            })
+            rows.append({
+                "target_id": 264824, "session": 9, "scan_idx": 3, "unit_id": 789,
+                "field": 1, "residual": 1.8, "score": 9.1, "pt_root_id": rid,
+            })
+        return {
+            "dataset": "minnie65",
+            "table_name": "coregistration_auto_phase3_fwd_apl_vess_combined_v2",
+            "materialization_version": 943,
+            "warnings": [],
+            "table_df": pd.DataFrame(rows),
+        }
+
+    def bulk_query_functional_properties(
+        self, root_ids: list[int], coregistration_source: str = "auto_phase3"
+    ) -> dict[str, Any]:
+        """Return mock bulk functional properties."""
+        table_map = {
+            "coreg_v4": "digital_twin_properties_bcm_coreg_v4",
+            "auto_phase3": "digital_twin_properties_bcm_coreg_auto_phase3_fwd_v2",
+            "apl_vess": "digital_twin_properties_bcm_coreg_apl_vess_fwd",
+        }
+        rows = []
+        for rid in root_ids:
+            rows.append({
+                "id": 264824, "cc_abs": 0.45, "cc_max": 0.68, "cc_norm": 0.66,
+                "OSI": 0.72, "DSI": 0.31, "gOSI": 0.65, "gDSI": 0.28,
+                "pref_ori": 45.0, "pref_dir": 90.0,
+                "readout_loc_x": 12.3, "readout_loc_y": -5.7,
+                "pt_root_id": rid,
+            })
+        return {
+            "dataset": "minnie65",
+            "table_name": table_map[coregistration_source],
+            "materialization_version": 943,
+            "warnings": [],
+            "table_df": pd.DataFrame(rows),
+            "coregistration_source": coregistration_source,
+        }
+
+    def bulk_query_synapse_targets(
+        self, root_ids: list[int], direction: str = "post"
+    ) -> dict[str, Any]:
+        """Return mock bulk synapse targets."""
+        rows = []
+        for rid in root_ids:
+            rows.extend([
+                {"pre_pt_root_id": 864691135000001, "post_pt_root_id": rid, "size": 120, "tag": "spine"},
+                {"pre_pt_root_id": 864691135000002, "post_pt_root_id": rid, "size": 85, "tag": "spine"},
+                {"pre_pt_root_id": 864691135000003, "post_pt_root_id": rid, "size": 95, "tag": "shaft"},
+            ])
+        return {
+            "dataset": "minnie65",
+            "table_name": "synapse_target_predictions_ssa_v2",
+            "materialization_version": 943,
+            "warnings": [],
+            "table_df": pd.DataFrame(rows),
+            "direction": direction,
+        }
+
+    def bulk_query_functional_area(
+        self, root_ids: list[int]
+    ) -> dict[str, Any]:
+        """Return mock bulk functional area data."""
+        rows = []
+        for rid in root_ids:
+            rows.append({
+                "target_id": 264824, "pt_root_id": rid, "tag": "V1", "value": 15.3,
+            })
+        return {
+            "dataset": "minnie65",
+            "table_name": "nucleus_functional_area_assignment",
+            "materialization_version": 943,
+            "warnings": [],
+            "table_df": pd.DataFrame(rows),
+        }
+
     def get_region_connectivity(
         self,
         source_region: str | None = None,
@@ -1292,6 +1405,32 @@ class MockNeuPrintBackend(ConnectomeBackend):
             "direction": direction,
             "compartments": compartments,
             "n_total_synapses": n_total,
+            "warnings": [],
+        }
+
+    def get_bulk_connectivity(
+        self, root_ids: list[int], direction: str = "both"
+    ) -> dict[str, Any]:
+        """Return mock bulk connectivity edges with neuropil."""
+        rows = []
+        for i, rid in enumerate(root_ids):
+            for j, rid2 in enumerate(root_ids):
+                if i != j:
+                    rows.append({
+                        "pre_root_id": rid,
+                        "post_root_id": rid2,
+                        "syn_count": 5 + i + j,
+                        "neuropil": "MB(R)",
+                    })
+        edges_df = pd.DataFrame(
+            rows,
+            columns=["pre_root_id", "post_root_id", "syn_count", "neuropil"],
+        ) if rows else pd.DataFrame(
+            columns=["pre_root_id", "post_root_id", "syn_count", "neuropil"]
+        )
+        return {
+            "edges_df": edges_df,
+            "materialization_version": None,
             "warnings": [],
         }
 
