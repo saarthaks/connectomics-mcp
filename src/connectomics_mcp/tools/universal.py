@@ -67,6 +67,7 @@ def get_neuron_info(
         If nucleus_id is provided but has no associated segment.
     """
     check_capability(dataset, "universal")
+    neuron_id = int(neuron_id)
 
     nucleus_warnings: list[str] = []
 
@@ -159,6 +160,7 @@ def get_connectivity(
         If the root ID is outdated (CAVE datasets only).
     """
     check_capability(dataset, "universal")
+    neuron_id = int(neuron_id)
 
     backend = get_backend(dataset)
     raw = backend.get_connectivity(neuron_id, direction=direction)
@@ -172,7 +174,7 @@ def get_connectivity(
 
 
 def validate_root_ids(
-    root_ids: list[int], dataset: str
+    root_ids: list[int | str], dataset: str
 ) -> dict[str, Any]:
     """Check whether neuron IDs are current.
 
@@ -201,6 +203,7 @@ def validate_root_ids(
         If the dataset is unknown or does not support universal tools.
     """
     check_capability(dataset, "universal")
+    root_ids = [int(r) for r in root_ids]
 
     backend = get_backend(dataset)
     raw = backend.validate_root_ids(root_ids)
@@ -431,7 +434,7 @@ def get_region_connectivity(
 
 
 def get_bulk_connectivity(
-    root_ids: list[int],
+    root_ids: list[int | str],
     dataset: str,
     direction: str = "both",
 ) -> dict[str, Any]:
@@ -473,6 +476,7 @@ def get_bulk_connectivity(
         If any root ID is stale (CAVE datasets).
     """
     check_capability(dataset, "universal")
+    root_ids = [int(r) for r in root_ids]
     backend = get_backend(dataset)
 
     # Compute content-addressable cache key

@@ -221,6 +221,17 @@ def save_artifact(
     )
     out_path = _artifact_dir() / filename
 
+    # Coerce root ID columns to nullable Int64 to prevent float64 inference
+    # when NaN values are present (pandas infers float64 for int+NaN columns).
+    _ROOT_ID_COLUMNS = {
+        "pt_root_id", "pre_root_id", "post_root_id", "partner_id",
+        "pre_pt_root_id", "post_pt_root_id", "root_id",
+        "partner_nucleus_id", "target_id",
+    }
+    for col in df.columns:
+        if col in _ROOT_ID_COLUMNS and df[col].dtype == "float64":
+            df[col] = df[col].astype("Int64")
+
     df.to_parquet(out_path, engine="pyarrow", compression="snappy", index=False)
     logger.debug("Wrote artifact %s (%d rows)", out_path, len(df))
 

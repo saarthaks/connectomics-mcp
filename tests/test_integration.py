@@ -107,7 +107,7 @@ class TestCrossToolWorkflows:
 
         # Step 2: load artifact and pick a neuron
         df = pd.read_parquet(type_resp.artifact_manifest.artifact_path)
-        first_neuron_id = int(df.iloc[0]["neuron_id"])
+        first_neuron_id = str(df.iloc[0]["neuron_id"])
 
         # Step 3: get info for that neuron
         info_result = universal.get_neuron_info(first_neuron_id, "minnie65")

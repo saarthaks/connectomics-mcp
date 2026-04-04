@@ -26,7 +26,7 @@ class TestGetProofreadingStatus:
         result = get_proofreading_status(720575940621039145, "minnie65")
 
         resp = ProofreadingStatusResponse(**result)
-        assert resp.neuron_id == 720575940621039145
+        assert resp.neuron_id == "720575940621039145"
         assert resp.dataset == "minnie65"
         assert resp.axon_proofread is True
         assert resp.dendrite_proofread is True
@@ -71,7 +71,7 @@ class TestResolveNucleusIds:
 
         res = resp.resolutions[0]
         assert res.nucleus_id == 100001
-        assert res.pt_root_id == 864691135000001
+        assert res.pt_root_id == "864691135000001"
         assert res.resolution_status == NucleusResolutionStatus.RESOLVED
         assert res.conflicting_nucleus_ids == []
 
@@ -85,7 +85,7 @@ class TestResolveNucleusIds:
 
         for res in resp.resolutions:
             assert res.resolution_status == NucleusResolutionStatus.MERGE_CONFLICT
-            assert res.pt_root_id == 864691135000099
+            assert res.pt_root_id == "864691135000099"
             assert len(res.conflicting_nucleus_ids) == 1
 
         # Check cross-references
@@ -201,7 +201,7 @@ class TestGetEditHistory:
         result = get_edit_history(720575940621039145, "minnie65")
 
         resp = EditHistoryResponse(**result)
-        assert resp.neuron_id == 720575940621039145
+        assert resp.neuron_id == "720575940621039145"
         assert resp.dataset == "minnie65"
         assert resp.n_edits_total == 6
         assert resp.first_edit_timestamp is not None

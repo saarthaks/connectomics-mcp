@@ -28,7 +28,7 @@ from connectomics_mcp.registry import DATASETS, check_capability, get_backend
 logger = logging.getLogger(__name__)
 
 
-def get_proofreading_status(neuron_id: int, dataset: str) -> dict[str, Any]:
+def get_proofreading_status(neuron_id: int | str, dataset: str) -> dict[str, Any]:
     """Get proofreading status for a CAVE neuron.
 
     Returns axon/dendrite proofreading flags, proofreading strategy,
@@ -56,6 +56,7 @@ def get_proofreading_status(neuron_id: int, dataset: str) -> dict[str, Any]:
         If the root ID is outdated.
     """
     check_capability(dataset, "cave")
+    neuron_id = int(neuron_id)
 
     backend = get_backend(dataset)
     raw = backend.get_proofreading_status(neuron_id)
@@ -115,7 +116,7 @@ def query_annotation_table(
     return response.model_dump()
 
 
-def get_edit_history(neuron_id: int, dataset: str) -> dict[str, Any]:
+def get_edit_history(neuron_id: int | str, dataset: str) -> dict[str, Any]:
     """Get edit history for a CAVE neuron.
 
     Returns a summary with edit count and timestamp range. The
@@ -143,6 +144,7 @@ def get_edit_history(neuron_id: int, dataset: str) -> dict[str, Any]:
         If the root ID is outdated.
     """
     check_capability(dataset, "cave")
+    neuron_id = int(neuron_id)
 
     backend = get_backend(dataset)
     raw = backend.get_edit_history(neuron_id)
@@ -222,7 +224,7 @@ def _check_minnie65(dataset: str, tool_name: str) -> None:
 
 
 def get_coregistration(
-    neuron_id: int, dataset: str, by: str = "root_id"
+    neuron_id: int | str, dataset: str, by: str = "root_id"
 ) -> dict[str, Any]:
     """Get EM-to-functional imaging coregistration for a neuron.
 
@@ -251,6 +253,7 @@ def get_coregistration(
         If root ID is stale (when ``by="root_id"``).
     """
     _check_minnie65(dataset, "coregistration")
+    neuron_id = int(neuron_id)
 
     backend = get_backend(dataset)
     raw = backend.query_coregistration(neuron_id, by=by)
@@ -263,7 +266,7 @@ def get_coregistration(
 
 
 def get_functional_properties(
-    neuron_id: int,
+    neuron_id: int | str,
     dataset: str,
     by: str = "root_id",
     coregistration_source: str = "auto_phase3",
@@ -299,6 +302,7 @@ def get_functional_properties(
         If root ID is stale (when ``by="root_id"``).
     """
     _check_minnie65(dataset, "functional_properties")
+    neuron_id = int(neuron_id)
 
     backend = get_backend(dataset)
     raw = backend.query_functional_properties(
@@ -313,7 +317,7 @@ def get_functional_properties(
 
 
 def get_synapse_targets(
-    root_id: int, dataset: str, direction: str = "post"
+    root_id: int | str, dataset: str, direction: str = "post"
 ) -> dict[str, Any]:
     """Get per-synapse structural target predictions for a neuron.
 
@@ -343,6 +347,7 @@ def get_synapse_targets(
         If root ID is stale.
     """
     _check_minnie65(dataset, "synapse_targets")
+    root_id = int(root_id)
 
     backend = get_backend(dataset)
     raw = backend.query_synapse_targets(root_id, direction=direction)
@@ -355,7 +360,7 @@ def get_synapse_targets(
 
 
 def get_multi_input_spines(
-    root_id: int, dataset: str, direction: str = "post"
+    root_id: int | str, dataset: str, direction: str = "post"
 ) -> dict[str, Any]:
     """Get multi-input spine predictions for a neuron.
 
@@ -386,6 +391,7 @@ def get_multi_input_spines(
         If root ID is stale.
     """
     _check_minnie65(dataset, "multi_input_spines")
+    root_id = int(root_id)
 
     backend = get_backend(dataset)
     raw = backend.query_multi_input_spines(root_id, direction=direction)
@@ -399,7 +405,7 @@ def get_multi_input_spines(
 
 def get_cell_mtypes(
     dataset: str,
-    neuron_id: int | None = None,
+    neuron_id: int | str | None = None,
     by: str = "root_id",
     cell_type: str | None = None,
 ) -> dict[str, Any]:
@@ -435,6 +441,8 @@ def get_cell_mtypes(
         If root ID is stale (when querying by root_id).
     """
     _check_minnie65(dataset, "cell_mtypes")
+    if neuron_id is not None:
+        neuron_id = int(neuron_id)
 
     backend = get_backend(dataset)
     raw = backend.query_cell_mtypes(
@@ -450,7 +458,7 @@ def get_cell_mtypes(
 
 def get_functional_area(
     dataset: str,
-    neuron_id: int | None = None,
+    neuron_id: int | str | None = None,
     by: str = "root_id",
     area: str | None = None,
 ) -> dict[str, Any]:
@@ -485,6 +493,8 @@ def get_functional_area(
         If root ID is stale (when querying by root_id).
     """
     _check_minnie65(dataset, "functional_area")
+    if neuron_id is not None:
+        neuron_id = int(neuron_id)
 
     backend = get_backend(dataset)
     raw = backend.query_functional_area(
@@ -504,7 +514,7 @@ def get_functional_area(
 
 
 def _bulk_staleness_gate(
-    root_ids: list[int], dataset: str
+    root_ids: list[int | str], dataset: str
 ) -> None:
     """Validate all root IDs are current, raising ValueError if any are stale."""
     backend = get_backend(dataset)
@@ -521,7 +531,7 @@ def _bulk_staleness_gate(
         )
 
 
-def _bulk_cache_key(root_ids: list[int], *extra_parts: str) -> str:
+def _bulk_cache_key(root_ids: list[int | str], *extra_parts: str) -> str:
     """Compute content-addressable cache key for bulk queries."""
     sorted_ids = sorted(root_ids)
     hash_input = ",".join(str(i) for i in sorted_ids)
@@ -551,7 +561,7 @@ def _check_bulk_cache(
 
 
 def get_bulk_coregistration(
-    root_ids: list[int], dataset: str
+    root_ids: list[int | str], dataset: str
 ) -> dict[str, Any]:
     """Get EM-to-functional coregistration for multiple neurons in bulk.
 
@@ -578,6 +588,7 @@ def get_bulk_coregistration(
         If any root ID is stale.
     """
     _check_minnie65(dataset, "bulk_coregistration")
+    root_ids = [int(r) for r in root_ids]
     backend = get_backend(dataset)
 
     extra_key = _bulk_cache_key(root_ids)
@@ -641,7 +652,7 @@ def get_bulk_coregistration(
 
 
 def get_bulk_functional_properties(
-    root_ids: list[int],
+    root_ids: list[int | str],
     dataset: str,
     coregistration_source: str = "auto_phase3",
 ) -> dict[str, Any]:
@@ -673,6 +684,7 @@ def get_bulk_functional_properties(
         If any root ID is stale.
     """
     _check_minnie65(dataset, "bulk_functional_properties")
+    root_ids = [int(r) for r in root_ids]
     backend = get_backend(dataset)
 
     extra_key = _bulk_cache_key(root_ids, coregistration_source)
@@ -749,7 +761,7 @@ def get_bulk_functional_properties(
 
 
 def get_bulk_synapse_targets(
-    root_ids: list[int], dataset: str, direction: str = "post"
+    root_ids: list[int | str], dataset: str, direction: str = "post"
 ) -> dict[str, Any]:
     """Get per-synapse structural target predictions for multiple neurons.
 
@@ -779,6 +791,7 @@ def get_bulk_synapse_targets(
         If any root ID is stale.
     """
     _check_minnie65(dataset, "bulk_synapse_targets")
+    root_ids = [int(r) for r in root_ids]
     backend = get_backend(dataset)
 
     extra_key = _bulk_cache_key(root_ids, direction)
@@ -837,7 +850,7 @@ def get_bulk_synapse_targets(
 
 
 def get_bulk_functional_area(
-    root_ids: list[int], dataset: str
+    root_ids: list[int | str], dataset: str
 ) -> dict[str, Any]:
     """Get functional brain area assignments for multiple neurons in bulk.
 
@@ -864,6 +877,7 @@ def get_bulk_functional_area(
         If any root ID is stale.
     """
     _check_minnie65(dataset, "bulk_functional_area")
+    root_ids = [int(r) for r in root_ids]
     backend = get_backend(dataset)
 
     extra_key = _bulk_cache_key(root_ids)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any
 
@@ -73,7 +74,7 @@ def format_neuron_info(raw: dict[str, Any], dataset: str) -> NeuronInfoResponse:
         logger.warning("No Neuroglancer config for dataset %s", dataset)
 
     return NeuronInfoResponse(
-        neuron_id=neuron_id,
+        neuron_id=str(neuron_id),
         dataset=dataset,
         cell_type=raw.get("cell_type"),
         cell_class=raw.get("cell_class"),
@@ -113,7 +114,7 @@ def _top_samples(
     for _, row in top.iterrows():
         samples.append(
             SynapticPartnerSample(
-                partner_id=int(row["partner_id"]),
+                partner_id=str(int(row["partner_id"])),
                 partner_type=(
                     str(row["partner_type"])
                     if "partner_type" in row.index and pd.notna(row["partner_type"])
@@ -204,7 +205,7 @@ def format_connectivity(
             nt_distribution = {str(k): int(v) for k, v in nt_counts.items()}
 
     return ConnectivityResponse(
-        neuron_id=neuron_id,
+        neuron_id=str(neuron_id),
         dataset=dataset,
         n_upstream_total=len(upstream_df),
         n_downstream_total=len(downstream_df),
@@ -286,10 +287,14 @@ def format_validate_root_ids(
     """
     results = [
         RootIdValidationResult(
-            root_id=r["root_id"],
+            root_id=str(r["root_id"]),
             is_current=r["is_current"],
             last_edit_timestamp=r.get("last_edit_timestamp"),
-            suggested_current_id=r.get("suggested_current_id"),
+            suggested_current_id=(
+                str(r["suggested_current_id"])
+                if r.get("suggested_current_id") is not None
+                else None
+            ),
         )
         for r in raw.get("results", [])
     ]
@@ -323,7 +328,7 @@ def format_proofreading_status(
         Validated, serializable response.
     """
     return ProofreadingStatusResponse(
-        neuron_id=raw["neuron_id"],
+        neuron_id=str(raw["neuron_id"]),
         dataset=dataset,
         axon_proofread=raw.get("axon_proofread"),
         dendrite_proofread=raw.get("dendrite_proofread"),
@@ -623,7 +628,7 @@ def format_edit_history(
         last_edit = str(edits_df["timestamp"].max())
 
     return EditHistoryResponse(
-        neuron_id=neuron_id,
+        neuron_id=str(neuron_id),
         dataset=dataset,
         n_edits_total=len(edits_df),
         first_edit_timestamp=first_edit,
@@ -653,7 +658,9 @@ def format_nucleus_resolution(
     resolutions = [
         NucleusResolution(
             nucleus_id=r["nucleus_id"],
-            pt_root_id=r.get("pt_root_id"),
+            pt_root_id=(
+                str(r["pt_root_id"]) if r.get("pt_root_id") is not None else None
+            ),
             resolution_status=NucleusResolutionStatus(r["resolution_status"]),
             conflicting_nucleus_ids=r.get("conflicting_nucleus_ids", []),
             materialization_version=r["materialization_version"],
@@ -694,6 +701,7 @@ def format_cypher_query(
     """
     result_df: pd.DataFrame = raw["result_df"]
     mat_version = raw.get("materialization_version")
+    query_hash = hashlib.sha256(raw["query"].encode()).hexdigest()[:12]
 
     manifest = save_artifact(
         df=result_df,
@@ -701,6 +709,7 @@ def format_cypher_query(
         dataset=dataset,
         neuron_id=None,
         materialization_version=mat_version,
+        extra_key=query_hash,
     )
 
     return CypherQueryResponse(
@@ -740,7 +749,7 @@ def format_synapse_compartments(
     ]
 
     return SynapseCompartmentResponse(
-        neuron_id=raw["neuron_id"],
+        neuron_id=str(raw["neuron_id"]),
         dataset=dataset,
         direction=raw.get("direction", "input"),
         compartments=compartments,
@@ -782,7 +791,7 @@ def format_coregistration(
     )
 
     return CoregistrationResponse(
-        neuron_id=raw["neuron_id"],
+        neuron_id=str(raw["neuron_id"]),
         query_by=raw["by"],
         dataset=dataset,
         n_units=len(table_df),
@@ -821,7 +830,7 @@ def format_functional_properties(
     )
 
     return FunctionalPropertiesResponse(
-        neuron_id=raw["neuron_id"],
+        neuron_id=str(raw["neuron_id"]),
         query_by=raw["by"],
         dataset=dataset,
         coregistration_source=raw["coregistration_source"],
@@ -858,7 +867,7 @@ def format_synapse_targets(
     )
 
     return SynapseTargetsResponse(
-        neuron_id=raw["neuron_id"],
+        neuron_id=str(raw["neuron_id"]),
         dataset=dataset,
         direction=raw["direction"],
         n_synapses=len(table_df),
@@ -891,7 +900,7 @@ def format_multi_input_spines(
     )
 
     return MultiInputSpinesResponse(
-        neuron_id=raw["neuron_id"],
+        neuron_id=str(raw["neuron_id"]),
         dataset=dataset,
         direction=raw["direction"],
         n_synapses=len(table_df),
@@ -929,7 +938,9 @@ def format_cell_mtypes(
 
     return CellMtypesResponse(
         dataset=dataset,
-        query_neuron_id=raw.get("neuron_id"),
+        query_neuron_id=(
+            str(raw["neuron_id"]) if raw.get("neuron_id") is not None else None
+        ),
         query_by=raw.get("by"),
         query_cell_type=raw.get("cell_type"),
         n_total=len(table_df),
@@ -960,7 +971,9 @@ def format_functional_area(
 
     return FunctionalAreaResponse(
         dataset=dataset,
-        query_neuron_id=raw.get("neuron_id"),
+        query_neuron_id=(
+            str(raw["neuron_id"]) if raw.get("neuron_id") is not None else None
+        ),
         query_by=raw.get("by"),
         query_area=raw.get("area"),
         n_total=len(table_df),

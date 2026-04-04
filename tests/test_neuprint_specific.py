@@ -71,13 +71,28 @@ class TestFetchCypher:
         json_str = resp.model_dump_json()
         assert isinstance(json_str, str)
 
+    def test_different_queries_get_different_artifacts(self, mock_neuprint_backend, tmp_path, monkeypatch):
+        """Regression: different Cypher queries must not collide in cache."""
+        monkeypatch.setenv("CONNECTOMICS_MCP_ARTIFACT_DIR", str(tmp_path))
+        query_a = "MATCH (n:Neuron) RETURN n.bodyId LIMIT 10"
+        query_b = "MATCH (n:Neuron)-[c:ConnectsTo]->(m) RETURN n.bodyId, m.bodyId"
+
+        result_a = fetch_cypher(query_a, "hemibrain")
+        result_b = fetch_cypher(query_b, "hemibrain")
+
+        resp_a = CypherQueryResponse(**result_a)
+        resp_b = CypherQueryResponse(**result_b)
+
+        # Different queries should produce different artifact files
+        assert resp_a.artifact_manifest.artifact_path != resp_b.artifact_manifest.artifact_path
+
 
 class TestGetSynapseCompartments:
     def test_normal_input_response(self, mock_neuprint_backend):
         result = get_synapse_compartments(12345, "hemibrain", direction="input")
 
         resp = SynapseCompartmentResponse(**result)
-        assert resp.neuron_id == 12345
+        assert resp.neuron_id == "12345"
         assert resp.dataset == "hemibrain"
         assert resp.direction == "input"
         assert len(resp.compartments) > 0

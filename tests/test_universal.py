@@ -33,7 +33,7 @@ class TestGetNeuronInfo:
         result = get_neuron_info(720575940621039145, "minnie65")
 
         resp = NeuronInfoResponse(**result)
-        assert resp.neuron_id == 720575940621039145
+        assert resp.neuron_id == "720575940621039145"
         assert resp.dataset == "minnie65"
         assert resp.cell_type == "L2/3 IT"
         assert resp.cell_class == "excitatory"
@@ -48,7 +48,7 @@ class TestGetNeuronInfo:
         result = get_neuron_info(12345, "hemibrain")
 
         resp = NeuronInfoResponse(**result)
-        assert resp.neuron_id == 12345
+        assert resp.neuron_id == "12345"
         assert resp.dataset == "hemibrain"
         assert resp.cell_type == "MBON14"
         assert resp.neuroglancer_url != ""
@@ -81,14 +81,14 @@ class TestGetNeuronInfo:
         result = get_neuron_info(0, "minnie65", nucleus_id=100001)
         resp = NeuronInfoResponse(**result)
         # Should have used the resolved pt_root_id 864691135000001
-        assert resp.neuron_id == 864691135000001
+        assert resp.neuron_id == "864691135000001"
         assert resp.warnings == []
 
     def test_nucleus_id_merge_conflict_warning(self, mock_cave_backend):
         """Merge conflict should proceed with warning."""
         result = get_neuron_info(0, "minnie65", nucleus_id=100002)
         resp = NeuronInfoResponse(**result)
-        assert resp.neuron_id == 864691135000099
+        assert resp.neuron_id == "864691135000099"
         assert any("merge error" in w for w in resp.warnings)
         assert any("100003" in w for w in resp.warnings)
 
@@ -115,7 +115,7 @@ class TestGetConnectivity:
         result = get_connectivity(720575940621039145, "minnie65")
 
         resp = ConnectivityResponse(**result)
-        assert resp.neuron_id == 720575940621039145
+        assert resp.neuron_id == "720575940621039145"
         assert resp.dataset == "minnie65"
         assert resp.n_upstream_total == 5
         assert resp.n_downstream_total == 4
@@ -126,7 +126,7 @@ class TestGetConnectivity:
         result = get_connectivity(12345, "hemibrain")
 
         resp = ConnectivityResponse(**result)
-        assert resp.neuron_id == 12345
+        assert resp.neuron_id == "12345"
         assert resp.dataset == "hemibrain"
         assert resp.n_upstream_total == 6
         assert resp.n_downstream_total == 3

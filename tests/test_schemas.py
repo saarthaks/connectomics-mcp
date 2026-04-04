@@ -38,7 +38,7 @@ class TestArtifactManifest:
 class TestNeuronInfoResponse:
     def test_instantiation(self):
         resp = NeuronInfoResponse(
-            neuron_id=720575940621039145,
+            neuron_id="720575940621039145",
             dataset="minnie65",
             cell_type="L2/3 IT",
             cell_class="excitatory",
@@ -51,19 +51,19 @@ class TestNeuronInfoResponse:
             neuroglancer_url="https://neuroglancer.brain-map.org/#!...",
         )
         data = resp.model_dump()
-        assert data["neuron_id"] == 720575940621039145
+        assert data["neuron_id"] == "720575940621039145"
         assert data["cell_type"] == "L2/3 IT"
         assert data["soma_position_nm"] == (200000.0, 300000.0, 400000.0)
 
     def test_minimal(self):
-        resp = NeuronInfoResponse(neuron_id=123, dataset="hemibrain")
+        resp = NeuronInfoResponse(neuron_id="123", dataset="hemibrain")
         assert resp.warnings == []
 
 
 class TestConnectivityResponse:
     def test_instantiation(self):
         sample = SynapticPartnerSample(
-            partner_id=999,
+            partner_id="999",
             partner_type="L4 IT",
             n_synapses=42,
             weight_normalized=0.15,
@@ -77,7 +77,7 @@ class TestConnectivityResponse:
             query_timestamp="2026-03-10T14:00:00",
         )
         resp = ConnectivityResponse(
-            neuron_id=123,
+            neuron_id="123",
             dataset="minnie65",
             n_upstream_total=120,
             n_downstream_total=80,
@@ -136,9 +136,9 @@ class TestNeuroglancerUrlResponse:
 class TestRootIdValidationResponse:
     def test_instantiation(self):
         result = RootIdValidationResult(
-            root_id=720575940621039145,
+            root_id="720575940621039145",
             is_current=False,
-            suggested_current_id=720575940621039200,
+            suggested_current_id="720575940621039200",
         )
         resp = RootIdValidationResponse(
             dataset="minnie65",
@@ -152,7 +152,7 @@ class TestRootIdValidationResponse:
 class TestProofreadingStatusResponse:
     def test_instantiation(self):
         resp = ProofreadingStatusResponse(
-            neuron_id=720575940621039145,
+            neuron_id="720575940621039145",
             dataset="minnie65",
             axon_proofread=True,
             dendrite_proofread=False,
@@ -176,7 +176,7 @@ class TestAnnotationTableResponse:
 class TestEditHistoryResponse:
     def test_instantiation(self):
         resp = EditHistoryResponse(
-            neuron_id=720575940621039145,
+            neuron_id="720575940621039145",
             dataset="minnie65",
             n_edits_total=5,
             first_edit_timestamp="2024-01-01T00:00:00",
@@ -200,7 +200,7 @@ class TestSynapseCompartmentResponse:
     def test_instantiation(self):
         stat = CompartmentStats(compartment="axon", n_synapses=500, fraction=0.65)
         resp = SynapseCompartmentResponse(
-            neuron_id=123,
+            neuron_id="123",
             dataset="hemibrain",
             direction="output",
             compartments=[stat],

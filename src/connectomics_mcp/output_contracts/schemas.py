@@ -41,7 +41,7 @@ class ArtifactManifest(BaseModel):
 class NeuronInfoResponse(BaseModel):
     """Scalar-only — no artifact needed."""
 
-    neuron_id: int | str
+    neuron_id: str
     dataset: str
     cell_type: str | None = None
     cell_class: str | None = None
@@ -60,7 +60,7 @@ class NeuronInfoResponse(BaseModel):
 class SynapticPartnerSample(BaseModel):
     """Lightweight partner for the 3-item orientation sample."""
 
-    partner_id: int | str
+    partner_id: str
     partner_type: str | None = None
     n_synapses: int = 0
     weight_normalized: float | None = None
@@ -69,7 +69,7 @@ class SynapticPartnerSample(BaseModel):
 class ConnectivityResponse(BaseModel):
     """Artifact-producing — full partner table saved to Parquet."""
 
-    neuron_id: int | str
+    neuron_id: str
     dataset: str
     n_upstream_total: int = 0
     n_downstream_total: int = 0
@@ -171,10 +171,10 @@ class NeuroglancerUrlResponse(BaseModel):
 
 
 class RootIdValidationResult(BaseModel):
-    root_id: int
+    root_id: str
     is_current: bool = True
     last_edit_timestamp: str | None = None
-    suggested_current_id: int | None = None
+    suggested_current_id: str | None = None
 
 
 class RootIdValidationResponse(BaseModel):
@@ -195,7 +195,7 @@ class RootIdValidationResponse(BaseModel):
 class ProofreadingStatusResponse(BaseModel):
     """Scalar-only — no artifact needed."""
 
-    neuron_id: int
+    neuron_id: str
     dataset: str
     axon_proofread: bool | None = None
     dendrite_proofread: bool | None = None
@@ -218,7 +218,7 @@ class NucleusResolution(BaseModel):
     """Resolution result for a single nucleus ID."""
 
     nucleus_id: int
-    pt_root_id: int | None = None
+    pt_root_id: str | None = None
     resolution_status: NucleusResolutionStatus
     conflicting_nucleus_ids: list[int] = []
     materialization_version: int
@@ -255,7 +255,7 @@ class AnnotationTableResponse(BaseModel):
 class CoregistrationResponse(BaseModel):
     """Artifact-producing — EM-to-functional imaging unit mappings."""
 
-    neuron_id: int
+    neuron_id: str
     query_by: str
     dataset: str
     n_units: int = 0
@@ -268,7 +268,7 @@ class CoregistrationResponse(BaseModel):
 class FunctionalPropertiesResponse(BaseModel):
     """Artifact-producing — digital twin tuning properties."""
 
-    neuron_id: int
+    neuron_id: str
     query_by: str
     dataset: str
     coregistration_source: str
@@ -282,7 +282,7 @@ class FunctionalPropertiesResponse(BaseModel):
 class SynapseTargetsResponse(BaseModel):
     """Artifact-producing — per-synapse structural target classification."""
 
-    neuron_id: int
+    neuron_id: str
     dataset: str
     direction: str
     n_synapses: int = 0
@@ -294,7 +294,7 @@ class SynapseTargetsResponse(BaseModel):
 class MultiInputSpinesResponse(BaseModel):
     """Artifact-producing — multi-input spine predictions (deprecated)."""
 
-    neuron_id: int
+    neuron_id: str
     dataset: str
     direction: str
     n_synapses: int = 0
@@ -308,7 +308,7 @@ class CellMtypesResponse(BaseModel):
     """Artifact-producing — morphological cell type classifications."""
 
     dataset: str
-    query_neuron_id: int | None = None
+    query_neuron_id: str | None = None
     query_by: str | None = None
     query_cell_type: str | None = None
     n_total: int = 0
@@ -322,7 +322,7 @@ class FunctionalAreaResponse(BaseModel):
     """Artifact-producing — brain area assignments per nucleus."""
 
     dataset: str
-    query_neuron_id: int | None = None
+    query_neuron_id: str | None = None
     query_by: str | None = None
     query_area: str | None = None
     n_total: int = 0
@@ -386,7 +386,7 @@ class BulkFunctionalAreaResponse(BaseModel):
 class EditHistoryResponse(BaseModel):
     """Artifact-producing — edit log saved to Parquet."""
 
-    neuron_id: int
+    neuron_id: str
     dataset: str
     n_edits_total: int = 0
     first_edit_timestamp: str | None = None
@@ -420,7 +420,7 @@ class CompartmentStats(BaseModel):
 class SynapseCompartmentResponse(BaseModel):
     """Scalar-only — always <= 5 compartment rows."""
 
-    neuron_id: int | str
+    neuron_id: str
     dataset: str
     direction: str = "input"
     compartments: list[CompartmentStats] = []
